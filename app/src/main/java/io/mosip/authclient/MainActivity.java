@@ -1,17 +1,13 @@
 package io.mosip.authclient;
 
-import android.content.ComponentName;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Bundle;
-import android.util.Base64;
-import android.util.Log;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.Spinner;
 import android.widget.Toast;
 
@@ -21,31 +17,54 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 
-import io.mosip.authclient.dto.CaptureDeviceDetail;
-import io.mosip.authclient.dto.CaptureRequest;
+import io.mosip.authclient.auth.AuthManagerService;
+import io.mosip.authclient.auth.AuthRequestBuilder;
+import io.mosip.authclient.auth.MosipAuthService;
+import io.mosip.authclient.auth.OtpService;
+import io.mosip.authclient.config.MosipConfig;
+import io.mosip.authclient.crypto.CertificateService;
+import io.mosip.authclient.crypto.MosipCryptoService;
+import io.mosip.authclient.crypto.PartnerSignatureService;
 import io.mosip.authclient.dto.DeviceInfoPayload;
-import io.mosip.authclient.dto.DeviceInfoResponse;
-import io.mosip.authclient.dto.DigitalIdPayload;
 import io.mosip.authclient.dto.DiscoverResponse;
+import io.mosip.authclient.sbi.SbiService;
+import io.mosip.authclient.util.AppLogger;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String TAG = "AuthClient";
+    private static final int REQUEST_DISCOVERY = 100;
+    private static final int REQUEST_INFO = 101;
+    private static final int REQUEST_CAPTURE = 102;
 
     // ------------------------------------------------------------
-    // SBI application
+    // UI
     // ------------------------------------------------------------
 
-    private String sbiPackageName;
-    private String sbiActivityName;
+    private CheckBox fingerCheckBox;
+    private CheckBox faceCheckBox;
+    private CheckBox irisCheckBox;
+
+    private Button discoverButton;
+    private Button infoButton;
+    private Button captureButton;
+    private Button authButton;
+    private Button requestOtpButton;
+    private Button resetButton;
+
+    private EditText otpEditText;
+
+    private Spinner fingerCountSpinner;
+    private Spinner irisTypeSpinner;
 
 
     // ------------------------------------------------------------
@@ -80,26 +99,12 @@ public class MainActivity extends AppCompatActivity {
 
     private List<String> captureModalities =
             new ArrayList<>();
-
     private int captureIndex = 0;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final List<JsonNode> capturedBiometrics = new ArrayList<>();
+    private String previousHash = "";
 
-
-    // ------------------------------------------------------------
-    // UI
-    // ------------------------------------------------------------
-
-    private CheckBox fingerCheckBox;
-    private CheckBox faceCheckBox;
-    private CheckBox irisCheckBox;
-
-    private Button discoverButton;
-    private Button infoButton;
-    private Button captureButton;
-    private Button resetButton;
-
-    private Spinner fingerCountSpinner;
-    private Spinner irisTypeSpinner;
-
+    private String combinedBiometrics;
 
     // Discovery order
     private final String[] discoveryTypes = {
@@ -108,6 +113,14 @@ public class MainActivity extends AppCompatActivity {
             "Iris"
     };
 
+    private SbiService sbiService;
+    private AuthManagerService authManagerService;
+    private CertificateService certificateService;
+    private MosipCryptoService mosipCryptoService;
+    private AuthRequestBuilder authRequestBuilder;
+    private PartnerSignatureService partnerSignatureService;
+    private OtpService otpService;
+    private MosipAuthService mosipAuthService;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -117,6 +130,42 @@ public class MainActivity extends AppCompatActivity {
         EdgeToEdge.enable(this);
 
         setContentView(R.layout.activity_main);
+
+        sbiService =
+                new SbiService(
+                        this,
+                        objectMapper
+                );
+
+        authManagerService =
+                new AuthManagerService(
+                        objectMapper
+                );
+
+        certificateService = new CertificateService(
+                this,
+                objectMapper,
+                authManagerService
+        );
+
+        mosipCryptoService = new MosipCryptoService();
+
+        authRequestBuilder = new AuthRequestBuilder(
+                objectMapper
+        );
+
+        partnerSignatureService = new PartnerSignatureService(
+                this
+        );
+
+        mosipAuthService = new MosipAuthService(this);
+
+        otpService = new OtpService(
+                this,
+                objectMapper,
+                authManagerService,
+                partnerSignatureService
+        );
 
 
         // --------------------------------------------------------
@@ -147,8 +196,17 @@ public class MainActivity extends AppCompatActivity {
         captureButton =
                 findViewById(R.id.captureButton);
 
+        authButton =
+                findViewById(R.id.authButton);
+
         resetButton =
                 findViewById(R.id.resetButton);
+
+        requestOtpButton =
+                findViewById(R.id.requestOtpButton);
+
+        otpEditText =
+                findViewById(R.id.otpEditText);
 
         setupFingerCountSpinner();
         setupIrisTypeSpinner();
@@ -223,6 +281,24 @@ public class MainActivity extends AppCompatActivity {
                 }
         );
 
+        authButton.setOnClickListener(
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        startAuthentication();
+                    }
+                }
+        );
+
+        requestOtpButton.setOnClickListener(
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        requestOtp();
+                    }
+                }
+        );
+
 
         // --------------------------------------------------------
         // Reset button
@@ -249,18 +325,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void startDiscoverySequence() {
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "================================"
         );
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "Starting Discovery sequence"
         );
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "================================"
         );
 
@@ -274,8 +347,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (discoveryIndex >= discoveryTypes.length) {
 
-            Log.d(
-                    TAG,
+            AppLogger.info(
                     "All Discovery requests completed"
             );
 
@@ -291,128 +363,26 @@ public class MainActivity extends AppCompatActivity {
         discoverSBI(type);
     }
 
+    private void discoverSBI(String biometricType) {
 
-    private void discoverSBI(
-            String biometricType) {
+        if (sbiService == null) {
 
-        try {
-
-            Intent intent =
-                    new Intent();
-
-            intent.setAction(
-                    "io.sbi.device"
-            );
-
-
-            PackageManager packageManager =
-                    getPackageManager();
-
-
-            List<ResolveInfo> activities =
-                    packageManager.queryIntentActivities(
-                            intent,
-                            PackageManager.MATCH_DEFAULT_ONLY
-                    );
-
-
-            if (activities.isEmpty()) {
-
-                Log.d(
-                        TAG,
-                        "No SBI application found"
-                );
-
-                Toast.makeText(
-                        this,
-                        "No SBI application found",
-                        Toast.LENGTH_LONG
-                ).show();
-
-                return;
-            }
-
-
-            ResolveInfo activity =
-                    activities.get(0);
-
-
-            sbiPackageName =
-                    activity.activityInfo
-                            .applicationInfo
-                            .packageName;
-
-            sbiActivityName =
-                    activity.activityInfo.name;
-
-
-            intent.setComponent(
-                    new ComponentName(
-                            sbiPackageName,
-                            sbiActivityName
-                    )
-            );
-
-
-            // ----------------------------------------------------
-            // IMPORTANT:
-            //
-            // Android MockSBI does NOT accept:
-            //
-            // {"type":"Biometric device"}
-            //
-            // So we discover each modality separately.
-            // ----------------------------------------------------
-
-            String request =
-                    "{\"type\":\""
-                            + biometricType
-                            + "\"}";
-
-
-            Log.d(
-                    TAG,
-                    "Discovery type: "
-                            + biometricType
-            );
-
-            Log.d(
-                    TAG,
-                    "Discovery request: "
-                            + request
-            );
-
-
-            intent.putExtra(
-                    "input",
-                    request.getBytes(
-                            StandardCharsets.UTF_8
-                    )
-            );
-
-
-            startActivityForResult(
-                    intent,
-                    100
-            );
-
-
-        } catch (Exception e) {
-
-            Log.e(
-                    TAG,
-                    "Discovery error: "
-                            + biometricType,
-                    e
+            AppLogger.error(
+                    "SBI service is not initialized"
             );
 
             Toast.makeText(
                     this,
-                    "Discovery error: "
-                            + biometricType,
+                    "Unable to access biometric device service.",
                     Toast.LENGTH_LONG
             ).show();
+
+            return;
         }
+
+        sbiService.discover(
+                biometricType
+        );
     }
 
 
@@ -436,18 +406,15 @@ public class MainActivity extends AppCompatActivity {
         }
 
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "================================"
         );
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "Starting Info sequence"
         );
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "================================"
         );
 
@@ -512,8 +479,7 @@ public class MainActivity extends AppCompatActivity {
 
         } else {
 
-            Log.d(
-                    TAG,
+            AppLogger.info(
                     "All Info requests completed"
             );
 
@@ -526,65 +492,24 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
-    private void getDeviceInfo(
-            DiscoverResponse sbi) {
+    private void getDeviceInfo(DiscoverResponse sbi) {
 
-        try {
+        if (sbiService == null) {
 
-            String action =
-                    sbi.getCallbackId()
-                            + ".Info";
-
-
-            Log.d(
-                    TAG,
-                    "Info action: "
-                            + action
-            );
-
-
-            Intent intent =
-                    new Intent();
-
-            intent.setAction(
-                    action
-            );
-
-
-            intent.setComponent(
-                    new ComponentName(
-                            sbiPackageName,
-                            sbiActivityName
-                    )
-            );
-
-
-            Log.d(
-                    TAG,
-                    "Sending Info request"
-            );
-
-
-            startActivityForResult(
-                    intent,
-                    101
-            );
-
-
-        } catch (Exception e) {
-
-            Log.e(
-                    TAG,
-                    "Info request failed",
-                    e
+            AppLogger.error(
+                    "SBI service is not initialized"
             );
 
             Toast.makeText(
                     this,
-                    "Info request failed",
+                    "Unable to access biometric device service.",
                     Toast.LENGTH_LONG
             ).show();
+
+            return;
         }
+
+        sbiService.requestInfo(sbi);
     }
 
 
@@ -596,86 +521,89 @@ public class MainActivity extends AppCompatActivity {
 
         captureModalities.clear();
 
+        // Start a fresh authentication capture session
+        capturedBiometrics.clear();
+        previousHash = "";
 
         // --------------------------------------------------------
         // Determine selected modalities
         // --------------------------------------------------------
 
         if (fingerCheckBox.isChecked()) {
-
-            captureModalities.add(
-                    "Finger"
-            );
+            captureModalities.add("Finger");
         }
-
 
         if (faceCheckBox.isChecked()) {
-
-            captureModalities.add(
-                    "Face"
-            );
+            captureModalities.add("Face");
         }
-
 
         if (irisCheckBox.isChecked()) {
-
-            captureModalities.add(
-                    "Iris"
-            );
+            captureModalities.add("Iris");
         }
-
 
         if (captureModalities.isEmpty()) {
 
+            AppLogger.warning(
+                    "No biometric modality selected"
+            );
+
             Toast.makeText(
                     this,
-                    "Select at least one biometric",
+                    "Please select at least one biometric.",
                     Toast.LENGTH_LONG
             ).show();
 
             return;
         }
 
-
         // --------------------------------------------------------
-        // Make sure required Info is available
+        // Validate required SBI information
         // --------------------------------------------------------
 
-        for (String modality
-                : captureModalities) {
+        for (String modality : captureModalities) {
 
-            if (modality.equals("Finger")
-                    && fingerInfo == null) {
+            if ("Finger".equals(modality)
+                    && (fingerSBI == null || fingerInfo == null)) {
+
+                AppLogger.warning(
+                        "Finger biometric selected but SBI information is unavailable"
+                );
 
                 Toast.makeText(
                         this,
-                        "Finger Info not available",
+                        "Finger biometric service is not available.",
                         Toast.LENGTH_LONG
                 ).show();
 
                 return;
             }
 
+            if ("Face".equals(modality)
+                    && (faceSBI == null || faceInfo == null)) {
 
-            if (modality.equals("Face")
-                    && faceInfo == null) {
+                AppLogger.warning(
+                        "Face biometric selected but SBI information is unavailable"
+                );
 
                 Toast.makeText(
                         this,
-                        "Face Info not available",
+                        "Face biometric service is not available.",
                         Toast.LENGTH_LONG
                 ).show();
 
                 return;
             }
 
+            if ("Iris".equals(modality)
+                    && (irisSBI == null || irisInfo == null)) {
 
-            if (modality.equals("Iris")
-                    && irisInfo == null) {
+                AppLogger.warning(
+                        "Iris biometric selected but SBI information is unavailable"
+                );
 
                 Toast.makeText(
                         this,
-                        "Iris Info not available",
+                        "Iris biometric service is not available.",
                         Toast.LENGTH_LONG
                 ).show();
 
@@ -683,17 +611,20 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        // --------------------------------------------------------
+        // Start capture sequence
+        // --------------------------------------------------------
 
         captureIndex = 0;
 
-
-        Log.d(
-                TAG,
-                "Capture sequence:"
-                        + " "
-                        + captureModalities
+        AppLogger.info(
+                "Starting biometric capture sequence"
         );
 
+        AppLogger.info(
+                "Selected modalities: "
+                        + captureModalities
+        );
 
         captureNext();
     }
@@ -701,299 +632,272 @@ public class MainActivity extends AppCompatActivity {
 
     private void captureNext() {
 
-        if (captureIndex >=
-                captureModalities.size()) {
+        if (captureIndex >= captureModalities.size()) {
 
-            Log.d(
-                    TAG,
-                    "All selected captures completed"
+            AppLogger.section(
+                    "ALL CAPTURES COMPLETED"
+            );
+
+            AppLogger.step(
+                    "Combining captured biometric responses"
+            );
+
+            combinedBiometrics =
+                    combineCaptures();
+
+            if (combinedBiometrics == null) {
+
+                AppLogger.error(
+                        "Failed to combine biometric responses"
+                );
+
+                Toast.makeText(
+                        this,
+                        "Unable to process biometric data. Please try again.",
+                        Toast.LENGTH_LONG
+                ).show();
+
+                return;
+            }
+
+            AppLogger.success(
+                    "All biometric captures processed successfully"
             );
 
             Toast.makeText(
                     this,
-                    "All captures completed",
+                    "Biometric capture completed.",
                     Toast.LENGTH_LONG
             ).show();
 
+            AppLogger.success(
+                    "Biometric capture complete. Ready for authentication."
+            );
+
             return;
         }
-
 
         String modality =
                 captureModalities.get(
                         captureIndex
                 );
 
-
-        Log.d(
-                TAG,
-                "Starting capture: "
+        AppLogger.step(
+                "Starting "
                         + modality
+                        + " biometric capture"
         );
-
 
         captureForModality(
                 modality
         );
     }
 
+    private String combineCaptures() {
+
+        AppLogger.info(
+                "Combining captured biometric data"
+        );
+
+        ObjectNode combined =
+                objectMapper.createObjectNode();
+
+        ArrayNode biometricsArray =
+                objectMapper.createArrayNode();
+
+        for (int i = 0;
+             i < capturedBiometrics.size();
+             i++) {
+
+            JsonNode biometric =
+                    capturedBiometrics.get(i);
+
+            AppLogger.info(
+                    "Adding biometric "
+                            + (i + 1)
+                            + " of "
+                            + capturedBiometrics.size()
+            );
+
+            biometricsArray.add(
+                    biometric
+            );
+        }
+
+        combined.set(
+                "biometrics",
+                biometricsArray
+        );
+
+        try {
+
+            String result =
+                    objectMapper
+                            .writerWithDefaultPrettyPrinter()
+                            .writeValueAsString(
+                                    combined
+                            );
+
+            AppLogger.info(
+                    "Biometric data combined successfully"
+            );
+
+            return result;
+
+        } catch (JsonProcessingException e) {
+
+            AppLogger.error(
+                    "Unable to create biometric request"
+            );
+
+            return null;
+        }
+    }
 
     private void captureForModality(
             String modality) {
 
-        DiscoverResponse sbi;
-        DeviceInfoPayload info;
+        if (sbiService == null) {
 
-
-        // --------------------------------------------------------
-        // Select correct SBI + Info
-        // --------------------------------------------------------
-
-        if (modality.equals("Finger")) {
-
-            sbi = fingerSBI;
-            info = fingerInfo;
-
-        } else if (modality.equals("Face")) {
-
-            sbi = faceSBI;
-            info = faceInfo;
-
-        } else {
-
-            sbi = irisSBI;
-            info = irisInfo;
-        }
-
-
-        if (sbi == null
-                || info == null) {
+            AppLogger.error(
+                    "SBI service is not initialized"
+            );
 
             Toast.makeText(
                     this,
-                    modality
-                            + " SBI/Info unavailable",
+                    "Unable to access biometric device service.",
                     Toast.LENGTH_LONG
             ).show();
 
             return;
         }
 
+        DiscoverResponse sbi;
+        DeviceInfoPayload info;
 
-        try {
+        // --------------------------------------------------------
+        // Select the SBI and device information
+        // --------------------------------------------------------
 
-            String action =
-                    sbi.getCallbackId()
-                            + ".Capture";
+        if ("Finger".equals(modality)) {
 
+            sbi = fingerSBI;
+            info = fingerInfo;
 
-            Log.d(
-                    TAG,
-                    "Capture action: "
-                            + action
-            );
+        } else if ("Face".equals(modality)) {
 
+            sbi = faceSBI;
+            info = faceInfo;
 
-            Intent intent =
-                    new Intent();
+        } else if ("Iris".equals(modality)) {
 
-            intent.setAction(
-                    action
-            );
+            sbi = irisSBI;
+            info = irisInfo;
 
+        } else {
 
-            // ----------------------------------------------------
-            // Capture Request
-            // ----------------------------------------------------
-
-            CaptureRequest request =
-                    new CaptureRequest();
-
-
-            request.setEnv(
-                    info.getEnv()
-            );
-
-
-            request.setPurpose(
-                    info.getPurpose()
-            );
-
-
-            request.setSpecVersion(
-                    info.getSpecVersion()
-                            .get(0)
-            );
-
-
-            request.setTimeout(
-                    10000
-            );
-
-
-            /*
-             * Temporary value.
-             * We will replace this later with actual UTC time.
-             */
-            request.setCaptureTime(
-                    "2026-08-19T10:00:00Z"
-            );
-
-
-            request.setDomainUri(
-                    ""
-            );
-
-
-            request.setTransactionId(
-                    String.valueOf(
-                            System.currentTimeMillis()
-                    )
-            );
-
-
-            // ----------------------------------------------------
-            // Bio details
-            // ----------------------------------------------------
-
-            CaptureDeviceDetail bio =
-                    new CaptureDeviceDetail();
-
-
-            bio.setType(
-                    modality
-            );
-
-
-            configureBiometricRequest(
-                    bio,
-                    modality
-            );
-
-
-            bio.setRequestedScore(
-                    40
-            );
-
-
-            bio.setDeviceId(
-                    info.getDeviceId()
-            );
-
-
-            bio.setDeviceSubId(
-                    info.getDeviceSubId()
-                            .get(0)
-            );
-
-
-            bio.setPreviousHash(
-                    ""
-            );
-
-
-            List<CaptureDeviceDetail> bioList =
-                    new ArrayList<>();
-
-            bioList.add(
-                    bio
-            );
-
-
-            request.setBio(
-                    bioList
-            );
-
-
-            request.setCustomOpts(
-                    null
-            );
-
-
-            // ----------------------------------------------------
-            // Convert request to JSON
-            // ----------------------------------------------------
-
-            ObjectMapper objectMapper =
-                    new ObjectMapper();
-
-
-            byte[] input =
-                    objectMapper.writeValueAsBytes(
-                            request
-                    );
-
-
-            String requestJson =
-                    new String(
-                            input,
-                            StandardCharsets.UTF_8
-                    );
-
-
-            Log.d(
-                    TAG,
-                    "--------------------------------"
-            );
-
-            Log.d(
-                    TAG,
-                    "Capture modality: "
+            AppLogger.error(
+                    "Unsupported biometric modality: "
                             + modality
-            );
-
-            Log.d(
-                    TAG,
-                    "Capture request: "
-                            + requestJson
-            );
-
-            Log.d(
-                    TAG,
-                    "--------------------------------"
-            );
-
-
-            // ----------------------------------------------------
-            // Send to SBI
-            // ----------------------------------------------------
-
-            intent.putExtra(
-                    "input",
-                    input
-            );
-
-
-            intent.setComponent(
-                    new ComponentName(
-                            sbiPackageName,
-                            sbiActivityName
-                    )
-            );
-
-
-            startActivityForResult(
-                    intent,
-                    102
-            );
-
-
-        } catch (Exception e) {
-
-            Log.e(
-                    TAG,
-                    "Capture request failed: "
-                            + modality,
-                    e
             );
 
             Toast.makeText(
                     this,
-                    "Capture request failed: "
-                            + modality,
+                    "Unsupported biometric type.",
                     Toast.LENGTH_LONG
             ).show();
+
+            return;
         }
+
+        if (sbi == null || info == null) {
+
+            AppLogger.warning(
+                    modality
+                            + " biometric device information is unavailable"
+            );
+
+            Toast.makeText(
+                    this,
+                    modality
+                            + " biometric device is unavailable.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
+        }
+
+        // --------------------------------------------------------
+        // Read current UI selections
+        // --------------------------------------------------------
+
+        int fingerCount = 1;
+
+        if (fingerCountSpinner != null
+                && fingerCountSpinner.getSelectedItem() != null) {
+
+            try {
+
+                fingerCount =
+                        Integer.parseInt(
+                                fingerCountSpinner
+                                        .getSelectedItem()
+                                        .toString()
+                        );
+
+            } catch (NumberFormatException e) {
+
+                AppLogger.warning(
+                        "Invalid finger count. Using default value 1."
+                );
+
+                fingerCount = 1;
+            }
+        }
+
+        String irisType = "Both Iris";
+
+        if (irisTypeSpinner != null
+                && irisTypeSpinner.getSelectedItem() != null) {
+
+            irisType =
+                    irisTypeSpinner
+                            .getSelectedItem()
+                            .toString();
+        }
+
+        AppLogger.step(
+                "Starting "
+                        + modality
+                        + " biometric capture"
+        );
+
+
+        AppLogger.d(
+                "DEBUG: SBI capture transaction ID = "
+                        + MosipConfig.TRANSACTION_ID
+        );
+
+        AppLogger.d(
+                "DEBUG: SBI capture modality = "
+                        + modality
+        );
+
+        AppLogger.d(
+                "DEBUG: SBI previousHash present = "
+                        + (previousHash != null
+                        && !previousHash.isEmpty())
+        );
+
+        sbiService.capture(
+                modality,
+                sbi,
+                info,
+                previousHash,
+                MosipConfig.TRANSACTION_ID,
+                fingerCount,
+                irisType
+        );
     }
 
 
@@ -1013,639 +917,417 @@ public class MainActivity extends AppCompatActivity {
                 data
         );
 
+        if (requestCode == REQUEST_DISCOVERY) {
 
-        // ========================================================
-        // DISCOVERY RESPONSE
-        // ========================================================
-
-        if (requestCode == 100) {
-
-            if (resultCode == RESULT_OK
-                    && data != null
-                    && data.hasExtra("response")) {
-
-                byte[] response =
-                        data.getByteArrayExtra(
-                                "response"
-                        );
-
-
-                String responseText =
-                        new String(
-                                response,
-                                StandardCharsets.UTF_8
-                        );
-
-
-                Log.d(
-                        TAG,
-                        "Discovery response for "
-                                + discoveryTypes[
-                                discoveryIndex
-                                ]
-                                + ": "
-                                + responseText
-                );
-
-
-                try {
-
-                    ObjectMapper objectMapper =
-                            new ObjectMapper();
-
-
-                    List<DiscoverResponse> responses =
-                            objectMapper.readValue(
-                                    response,
-                                    new TypeReference<
-                                            List<DiscoverResponse>
-                                            >() {}
-                            );
-
-
-                    if (responses.isEmpty()) {
-
-                        Log.d(
-                                TAG,
-                                "No device found for "
-                                        + discoveryTypes[
-                                        discoveryIndex
-                                        ]
-                        );
-
-                    } else {
-
-                        /*
-                         * For each discovery request we
-                         * expect the corresponding modality.
-                         *
-                         * We take the first response.
-                         */
-
-                        DiscoverResponse sbi =
-                                responses.get(0);
-
-
-                        String modality =
-                                discoveryTypes[
-                                        discoveryIndex
-                                        ];
-
-
-                        // ----------------------------------------
-                        // Save SBI
-                        // ----------------------------------------
-
-                        if (modality.equals("Finger")) {
-
-                            fingerSBI = sbi;
-
-                        } else if (
-                                modality.equals("Face")) {
-
-                            faceSBI = sbi;
-
-                        } else if (
-                                modality.equals("Iris")) {
-
-                            irisSBI = sbi;
-                        }
-
-
-                        // ----------------------------------------
-                        // Decode Discovery digitalId
-                        // ----------------------------------------
-
-                        DigitalIdPayload digitalId =
-                                decodeDiscoveryDigitalId(
-                                        sbi.getDigitalId()
-                                );
-
-
-                        /*
-                         * Save decoded Digital ID
-                         * inside the DiscoverResponse.
-                         */
-                        sbi.setDecodedDigitalId(
-                                digitalId
-                        );
-
-
-                        Log.d(
-                                TAG,
-                                "Discovered "
-                                        + modality
-                        );
-
-                        Log.d(
-                                TAG,
-                                "Device ID: "
-                                        + sbi.getDeviceId()
-                        );
-
-                        Log.d(
-                                TAG,
-                                "Callback ID: "
-                                        + sbi.getCallbackId()
-                        );
-
-                        Log.d(
-                                TAG,
-                                "Device Status: "
-                                        + sbi.getDeviceStatus()
-                        );
-
-                        Log.d(
-                                TAG,
-                                "Digital ID Serial: "
-                                        + digitalId
-                                        .getSerialNo()
-                        );
-
-                        Log.d(
-                                TAG,
-                                "Digital ID Model: "
-                                        + digitalId
-                                        .getModel()
-                        );
-
-                        Log.d(
-                                TAG,
-                                "Digital ID Type: "
-                                        + digitalId
-                                        .getType()
-                        );
-                    }
-
-
-                    // Move to next modality
-                    discoveryIndex++;
-
-                    discoverNext();
-
-
-                } catch (Exception e) {
-
-                    Log.e(
-                            TAG,
-                            "Unable to parse discovery response",
-                            e
-                    );
-
-                    Toast.makeText(
-                            this,
-                            "Unable to parse "
-                                    + discoveryTypes[
-                                    discoveryIndex
-                                    ]
-                                    + " discovery",
-                            Toast.LENGTH_LONG
-                    ).show();
-                }
-
-            } else {
-
-                Log.d(
-                        TAG,
-                        "Discovery cancelled/failed"
-                );
-
-                Toast.makeText(
-                        this,
-                        "Discovery failed",
-                        Toast.LENGTH_LONG
-                ).show();
-            }
+            handleDiscoveryResult(
+                    resultCode,
+                    data
+            );
 
             return;
         }
 
+        if (requestCode == REQUEST_INFO) {
 
-        // ========================================================
-        // INFO RESPONSE
-        // ========================================================
-
-        if (requestCode == 101) {
-
-            if (resultCode == RESULT_OK
-                    && data != null
-                    && data.hasExtra("response")) {
-
-                byte[] response =
-                        data.getByteArrayExtra(
-                                "response"
-                        );
-
-
-                String responseText =
-                        new String(
-                                response,
-                                StandardCharsets.UTF_8
-                        );
-
-
-                Log.d(
-                        TAG,
-                        "Info response: "
-                                + responseText
-                );
-
-
-                try {
-
-                    ObjectMapper objectMapper =
-                            new ObjectMapper();
-
-
-                    List<DeviceInfoResponse> responses =
-                            objectMapper.readValue(
-                                    response,
-                                    new TypeReference<
-                                            List<DeviceInfoResponse>
-                                            >() {}
-                            );
-
-
-                    if (responses.isEmpty()) {
-
-                        throw new Exception(
-                                "Empty Info response"
-                        );
-                    }
-
-
-                    DeviceInfoResponse infoResponse =
-                            responses.get(0);
-
-
-                    // --------------------------------------------
-                    // SBI error
-                    // --------------------------------------------
-
-                    if (infoResponse.getError() != null
-                            && !"0".equals(
-                            infoResponse
-                                    .getError()
-                                    .getErrorCode())) {
-
-                        throw new Exception(
-                                infoResponse
-                                        .getError()
-                                        .getErrorInfo()
-                        );
-                    }
-
-
-                    // --------------------------------------------
-                    // Decode deviceInfo JWT
-                    // --------------------------------------------
-
-                    byte[] payload =
-                            getJwtPayload(
-                                    infoResponse
-                                            .getDeviceInfo()
-                            );
-
-
-                    if (payload == null) {
-
-                        throw new Exception(
-                                "Unable to decode deviceInfo JWT"
-                        );
-                    }
-
-
-                    DeviceInfoPayload info =
-                            objectMapper.readValue(
-                                    payload,
-                                    DeviceInfoPayload.class
-                            );
-
-
-                    /*
-                     * IMPORTANT:
-                     *
-                     * We DO NOT decode digitalId here.
-                     *
-                     * digitalId was already obtained
-                     * from Discovery.
-                     */
-
-
-                    // --------------------------------------------
-                    // Save Info against correct modality
-                    // --------------------------------------------
-
-                    if (infoIndex == 0
-                            && fingerSBI != null) {
-
-                        fingerInfo = info;
-
-                        Log.d(
-                                TAG,
-                                "Finger Info saved"
-                        );
-
-                    } else if (
-                            infoIndex == 1
-                                    && faceSBI != null) {
-
-                        faceInfo = info;
-
-                        Log.d(
-                                TAG,
-                                "Face Info saved"
-                        );
-
-                    } else if (
-                            infoIndex == 2
-                                    && irisSBI != null) {
-
-                        irisInfo = info;
-
-                        Log.d(
-                                TAG,
-                                "Iris Info saved"
-                        );
-                    }
-
-
-                    Log.d(
-                            TAG,
-                            "Device ID: "
-                                    + info.getDeviceId()
-                    );
-
-                    Log.d(
-                            TAG,
-                            "Device Status: "
-                                    + info.getDeviceStatus()
-                    );
-
-                    Log.d(
-                            TAG,
-                            "Firmware: "
-                                    + info.getFirmware()
-                    );
-
-
-                    // Move to next modality
-                    infoIndex++;
-
-                    getNextDeviceInfo();
-
-
-                } catch (Exception e) {
-
-                    Log.e(
-                            TAG,
-                            "Unable to parse info response",
-                            e
-                    );
-
-                    Toast.makeText(
-                            this,
-                            "Unable to parse Info response",
-                            Toast.LENGTH_LONG
-                    ).show();
-                }
-
-            } else {
-
-                Toast.makeText(
-                        this,
-                        "Info request failed",
-                        Toast.LENGTH_LONG
-                ).show();
-            }
+            handleInfoResult(
+                    resultCode,
+                    data
+            );
 
             return;
         }
 
+        if (requestCode == REQUEST_CAPTURE) {
 
-        // ========================================================
-        // CAPTURE RESPONSE
-        // ========================================================
-
-        if (requestCode == 102) {
-
-            if (resultCode == RESULT_OK
-                    && data != null
-                    && data.hasExtra("response")) {
-
-                Uri uri =
-                        data.getParcelableExtra(
-                                "response"
-                        );
-
-
-                if (uri == null) {
-
-                    Toast.makeText(
-                            this,
-                            "Capture response URI not found",
-                            Toast.LENGTH_LONG
-                    ).show();
-
-                    return;
-                }
-
-
-                Log.d(
-                        TAG,
-                        "Capture response URI: "
-                                + uri
-                );
-
-
-                try {
-
-                    InputStream inputStream =
-                            getContentResolver()
-                                    .openInputStream(
-                                            uri
-                                    );
-
-
-                    byte[] response =
-                            readBytes(
-                                    inputStream
-                            );
-
-
-                    String responseText =
-                            new String(
-                                    response,
-                                    StandardCharsets.UTF_8
-                            );
-
-
-                    Log.d(
-                            TAG,
-                            "Capture response: "
-                                    + responseText
-                    );
-
-
-                    String modality =
-                            captureModalities.get(
-                                    captureIndex
-                            );
-
-
-                    Log.d(
-                            TAG,
-                            "Completed capture: "
-                                    + modality
-                    );
-
-
-                    Toast.makeText(
-                            this,
-                            modality
-                                    + " capture completed",
-                            Toast.LENGTH_SHORT
-                    ).show();
-
-
-                    // Move to next selected modality
-                    captureIndex++;
-
-                    captureNext();
-
-
-                } catch (Exception e) {
-
-                    Log.e(
-                            TAG,
-                            "Unable to read capture response",
-                            e
-                    );
-
-                    Toast.makeText(
-                            this,
-                            "Unable to read capture response",
-                            Toast.LENGTH_LONG
-                    ).show();
-                }
-
-            } else {
-
-                Toast.makeText(
-                        this,
-                        "Capture failed",
-                        Toast.LENGTH_LONG
-                ).show();
-            }
+            handleCaptureResult(
+                    resultCode,
+                    data
+            );
         }
     }
 
+    private void handleDiscoveryResult(
+            int resultCode,
+            Intent data) {
 
-    // ============================================================
-    // DISCOVERY DIGITAL ID DECODER
-    // ============================================================
+        if (resultCode != RESULT_OK
+                || data == null
+                || !data.hasExtra("response")) {
 
-    private DigitalIdPayload
-    decodeDiscoveryDigitalId(
-            String digitalId)
-            throws Exception {
+            AppLogger.warning(
+                    "SBI discovery was cancelled or failed"
+            );
 
-        byte[] decoded =
-                Base64.decode(
-                        digitalId,
-                        Base64.DEFAULT
+            Toast.makeText(
+                    this,
+                    "Biometric device discovery was not completed.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
+        }
+
+        byte[] response =
+                data.getByteArrayExtra(
+                        "response"
                 );
 
+        if (response == null
+                || response.length == 0) {
 
-        ObjectMapper objectMapper =
-                new ObjectMapper();
+            AppLogger.error(
+                    "SBI discovery returned an empty response"
+            );
 
+            Toast.makeText(
+                    this,
+                    "No biometric device information was received.",
+                    Toast.LENGTH_LONG
+            ).show();
 
-        return objectMapper.readValue(
-                decoded,
-                DigitalIdPayload.class
-        );
-    }
+            return;
+        }
 
-
-    // ============================================================
-    // JWT PAYLOAD DECODER
-    // ============================================================
-
-    private byte[] getJwtPayload(
-            String jwt) {
+        String modality =
+                discoveryTypes[discoveryIndex];
 
         try {
 
-            String[] parts =
-                    jwt.split("\\.");
+            DiscoverResponse sbi =
+                    sbiService.parseDiscoveryResponse(
+                            response,
+                            modality
+                    );
 
+            if ("Finger".equals(modality)) {
 
-            if (parts.length < 2) {
+                fingerSBI = sbi;
 
-                throw new IllegalArgumentException(
-                        "Invalid JWT"
-                );
+            } else if ("Face".equals(modality)) {
+
+                faceSBI = sbi;
+
+            } else if ("Iris".equals(modality)) {
+
+                irisSBI = sbi;
             }
 
-
-            return Base64.decode(
-                    parts[1],
-                    Base64.URL_SAFE
+            AppLogger.success(
+                    modality
+                            + " biometric device saved"
             );
+
+            discoveryIndex++;
+
+            discoverNext();
 
         } catch (Exception e) {
 
-            Log.e(
-                    TAG,
-                    "JWT decode failed",
-                    e
+            AppLogger.error(
+                    "Unable to process "
+                            + modality
+                            + " discovery response"
             );
 
-            return null;
+            Toast.makeText(
+                    this,
+                    "Unable to discover "
+                            + modality
+                            + " biometric device.",
+                    Toast.LENGTH_LONG
+            ).show();
         }
     }
 
+    private void handleInfoResult(
+            int resultCode,
+            Intent data) {
 
-    // ============================================================
-    // READ CONTENT URI
-    // ============================================================
+        if (resultCode != RESULT_OK
+                || data == null
+                || !data.hasExtra("response")) {
 
-    private byte[] readBytes(
-            InputStream inputStream)
-            throws Exception {
-
-        java.io.ByteArrayOutputStream buffer =
-                new java.io.ByteArrayOutputStream();
-
-
-        byte[] data =
-                new byte[4096];
-
-
-        int bytesRead;
-
-
-        while (
-                (bytesRead =
-                        inputStream.read(data))
-                        != -1
-        ) {
-
-            buffer.write(
-                    data,
-                    0,
-                    bytesRead
+            AppLogger.warning(
+                    "SBI device information request was cancelled or failed"
             );
+
+            Toast.makeText(
+                    this,
+                    "Unable to retrieve biometric device information.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
         }
 
+        byte[] response =
+                data.getByteArrayExtra(
+                        "response"
+                );
 
-        inputStream.close();
+        if (response == null
+                || response.length == 0) {
 
+            AppLogger.error(
+                    "SBI device information response is empty"
+            );
 
-        return buffer.toByteArray();
+            Toast.makeText(
+                    this,
+                    "Biometric device information was not received.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
+        }
+
+        try {
+
+            DeviceInfoPayload info =
+                    sbiService.parseDeviceInfoResponse(
+                            response
+                    );
+
+            if (infoIndex == 0
+                    && fingerSBI != null) {
+
+                fingerInfo = info;
+
+                AppLogger.success(
+                        "Finger device information saved"
+                );
+
+            } else if (infoIndex == 1
+                    && faceSBI != null) {
+
+                faceInfo = info;
+
+                AppLogger.success(
+                        "Face device information saved"
+                );
+
+            } else if (infoIndex == 2
+                    && irisSBI != null) {
+
+                irisInfo = info;
+
+                AppLogger.success(
+                        "Iris device information saved"
+                );
+
+            } else {
+
+                AppLogger.warning(
+                        "Unable to associate device information with modality"
+                );
+            }
+
+            infoIndex++;
+
+            getNextDeviceInfo();
+
+        } catch (Exception e) {
+
+            AppLogger.error(
+                    "Unable to process SBI device information"
+            );
+
+            Toast.makeText(
+                    this,
+                    "Unable to retrieve biometric device information.",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
     }
 
+    private void handleCaptureResult(
+            int resultCode,
+            Intent data) {
+
+        if (resultCode != RESULT_OK
+                || data == null
+                || !data.hasExtra("response")) {
+
+            AppLogger.error(
+                    "SBI capture failed or was cancelled"
+            );
+
+            Toast.makeText(
+                    this,
+                    "Biometric capture was not completed.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
+        }
+
+        Uri uri =
+                data.getParcelableExtra(
+                        "response"
+                );
+
+        if (uri == null) {
+
+            AppLogger.error(
+                    "SBI capture response URI not found"
+            );
+
+            Toast.makeText(
+                    this,
+                    "Unable to receive biometric data.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
+        }
+
+        if (captureIndex >= captureModalities.size()) {
+
+            AppLogger.error(
+                    "Invalid capture index: "
+                            + captureIndex
+            );
+
+            Toast.makeText(
+                    this,
+                    "Unable to process biometric capture.",
+                    Toast.LENGTH_LONG
+            ).show();
+
+            return;
+        }
+
+        String modality =
+                captureModalities.get(
+                        captureIndex
+                );
+
+        AppLogger.step(
+                "Processing "
+                        + modality
+                        + " capture response"
+        );
+
+        try {
+
+            List<JsonNode> biometricObjects =
+                    sbiService.readCaptureResponse(
+                            uri
+                    );
+
+            if (biometricObjects.isEmpty()) {
+
+                AppLogger.error(
+                        modality
+                                + " response contains no biometric data"
+                );
+
+                Toast.makeText(
+                        this,
+                        "Biometric capture did not return valid data.",
+                        Toast.LENGTH_LONG
+                ).show();
+
+                return;
+            }
+
+            for (JsonNode biometric :
+                    biometricObjects) {
+
+                JsonNode error =
+                        biometric.get("error");
+
+                if (error != null) {
+
+                    String errorCode =
+                            error.path(
+                                    "errorCode"
+                            ).asText();
+
+                    String errorInfo =
+                            error.path(
+                                    "errorInfo"
+                            ).asText();
+
+                    AppLogger.info(
+                            modality
+                                    + " SBI error code: "
+                                    + errorCode
+                    );
+
+                    if (!"0".equals(errorCode)
+                            && !"100".equals(errorCode)) {
+
+                        AppLogger.error(
+                                modality
+                                        + " capture failed: "
+                                        + errorInfo
+                        );
+
+                        Toast.makeText(
+                                this,
+                                "Biometric capture failed. Please try again.",
+                                Toast.LENGTH_LONG
+                        ).show();
+
+                        return;
+                    }
+                }
+
+                capturedBiometrics.add(
+                        biometric
+                );
+
+                AppLogger.success(
+                        modality
+                                + " biometric captured successfully"
+                );
+
+                AppLogger.info(
+                        "Total captured biometrics: "
+                                + capturedBiometrics.size()
+                );
+
+                JsonNode hashNode =
+                        biometric.get("hash");
+
+                if (hashNode != null
+                        && !hashNode.isNull()
+                        && !hashNode.asText().isEmpty()) {
+
+                    previousHash =
+                            hashNode.asText();
+
+                    AppLogger.info(
+                            "Previous biometric hash updated"
+                    );
+                }
+            }
+
+            captureIndex++;
+
+            AppLogger.success(
+                    modality
+                            + " capture completed"
+            );
+
+            captureNext();
+
+        } catch (Exception e) {
+
+            AppLogger.error(
+                    "Unable to process "
+                            + modality
+                            + " capture response"
+            );
+
+            Toast.makeText(
+                    this,
+                    "Unable to process biometric capture. Please try again.",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
+    }
 
     // ============================================================
     // RESET
@@ -1653,18 +1335,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void resetApplication() {
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "================================"
         );
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "RESET"
         );
 
-        Log.d(
-                TAG,
+        AppLogger.section(
                 "================================"
         );
 
@@ -1686,7 +1365,6 @@ public class MainActivity extends AppCompatActivity {
         infoIndex = 0;
         captureIndex = 0;
 
-
         // Clear capture queue
         captureModalities.clear();
 
@@ -1697,8 +1375,7 @@ public class MainActivity extends AppCompatActivity {
         irisCheckBox.setChecked(false);
 
 
-        Log.d(
-                TAG,
+        AppLogger.info(
                 "All saved state cleared"
         );
 
@@ -1768,124 +1445,278 @@ public class MainActivity extends AppCompatActivity {
         irisTypeSpinner.setSelection(2);
     }
 
-    private void configureBiometricRequest(
-            CaptureDeviceDetail bio,
-            String modality) {
+    private void requestOtp() {
 
-        // ------------------------------------------------------------
-        // FINGER
-        // ------------------------------------------------------------
+        if (otpService == null) {
 
-        if (modality.equals("Finger")) {
+            Toast.makeText(
+                    this,
+                    "OTP service is not available.",
+                    Toast.LENGTH_LONG
+            ).show();
 
-            int count =
-                    Integer.parseInt(
-                            fingerCountSpinner
-                                    .getSelectedItem()
+            return;
+        }
+
+        requestOtpButton.setEnabled(false);
+
+        AppLogger.section(
+                "REQUESTING OTP"
+        );
+
+        otpService.requestOtp(
+                new OtpService.OtpCallback() {
+
+                    @Override
+                    public void onOtpRequested() {
+
+                        requestOtpButton.setEnabled(true);
+
+                        otpEditText.setEnabled(true);
+
+                        otpEditText.requestFocus();
+
+                        Toast.makeText(
+                                MainActivity.this,
+                                "OTP sent to registered email",
+                                Toast.LENGTH_LONG
+                        ).show();
+                    }
+
+                    @Override
+                    public void onOtpRequestFailed(
+                            String message
+                    ) {
+
+                        requestOtpButton.setEnabled(true);
+
+                        otpEditText.setEnabled(false);
+                    }
+                }
+        );
+    }
+
+    private void startAuthentication() {
+
+        new Thread(() -> {
+
+            try {
+
+                if (MosipConfig.TRANSACTION_ID == null
+                        || MosipConfig.TRANSACTION_ID.trim().isEmpty()) {
+
+                    throw new Exception(
+                            "Authentication transaction ID is not available"
+                    );
+                }
+
+                AppLogger.section("================================");
+                AppLogger.section("STARTING MOSIP AUTHENTICATION");
+                AppLogger.section("================================");
+
+                // ----------------------------------------------------
+                // 1. Determine authentication methods
+                // ----------------------------------------------------
+
+                boolean hasBiometrics =
+                        combinedBiometrics != null
+                                && !combinedBiometrics.trim().isEmpty();
+
+                String otp = null;
+
+                if (otpEditText != null) {
+
+                    otp =
+                            otpEditText
+                                    .getText()
                                     .toString()
+                                    .trim();
+                }
+
+                boolean hasOtp =
+                        otp != null
+                                && !otp.isEmpty();
+
+                if (!hasBiometrics && !hasOtp) {
+
+                    runOnUiThread(() ->
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Please capture biometrics or enter OTP.",
+                                    Toast.LENGTH_LONG
+                            ).show()
                     );
 
-            bio.setCount(
-                    String.valueOf(count)
-            );
+                    AppLogger.warning(
+                            "No authentication method selected"
+                    );
 
+                    return;
+                }
 
-            /*
-             * For now we don't know the exact
-             * fingers being captured.
-             *
-             * Therefore use UNKNOWN for every
-             * requested biometric.
-             *
-             * Example count = 3:
-             *
-             * ["UNKNOWN", "UNKNOWN", "UNKNOWN"]
-             */
+                AppLogger.info(
+                        "Biometric authentication = "
+                                + hasBiometrics
+                );
 
-            String[] subTypes =
-                    new String[count];
+                AppLogger.info(
+                        "OTP authentication = "
+                                + hasOtp
+                );
 
-            for (int i = 0; i < count; i++) {
+                // ----------------------------------------------------
+                // 2. Build identity request
+                // ----------------------------------------------------
 
-                subTypes[i] =
-                        "UNKNOWN";
-            }
+                String identityRequest =
+                        authRequestBuilder.buildIdentityRequest(
+                                hasBiometrics
+                                        ? combinedBiometrics
+                                        : null,
+                                hasOtp
+                                        ? otp
+                                        : null
+                        );
 
-            bio.setBioSubType(
-                    subTypes
-            );
-        }
+                AppLogger.info(
+                        "Identity request created"
+                );
 
+                AppLogger.d(
+                        "DEBUG: Identity request length = "
+                                + identityRequest.length()
+                );
 
-        // ------------------------------------------------------------
-        // IRIS
-        // ------------------------------------------------------------
+                // ----------------------------------------------------
+                // 3. Get MOSIP certificate
+                // ----------------------------------------------------
 
-        else if (modality.equals("Iris")) {
+                X509Certificate certificate =
+                        certificateService.getMosipCertificate();
 
-            String selected =
-                    irisTypeSpinner
-                            .getSelectedItem()
-                            .toString();
+                AppLogger.info(
+                        "MOSIP encryption certificate loaded"
+                );
 
+                // ----------------------------------------------------
+                // 4. Encrypt identity request
+                // ----------------------------------------------------
 
-            if (selected.equals("Left Iris")) {
+                MosipCryptoService.EncryptionResult encryptionResult =
+                        mosipCryptoService.encryptIdentityRequest(
+                                identityRequest,
+                                certificate
+                        );
 
-                bio.setCount("1");
+                AppLogger.info(
+                        "Identity request encrypted successfully"
+                );
 
-                bio.setBioSubType(
-                        new String[]{
-                                "Left"
-                        }
+                // ----------------------------------------------------
+                // 5. Build Auth request
+                // ----------------------------------------------------
+
+                String authRequestJson =
+                        authRequestBuilder.buildAuthRequest(
+                                encryptionResult,
+                                MosipConfig.TRANSACTION_ID,
+                                hasBiometrics,
+                                hasOtp
+                        );
+
+                AppLogger.info(
+                        "Auth request created"
+                );
+
+                AppLogger.d(
+                        "DEBUG: Auth request contains transaction ID = "
+                                + authRequestJson.contains(
+                                MosipConfig.TRANSACTION_ID
+                        )
+                );
+
+                AppLogger.d(
+                        "DEBUG: Auth request length = "
+                                + authRequestJson.length()
+                );
+
+                // ----------------------------------------------------
+                // 6. Generate MOSIP Authorization token
+                // ----------------------------------------------------
+
+                String authorizationToken =
+                        authManagerService.getAuthManagerToken();
+
+                if (authorizationToken == null
+                        || authorizationToken.trim().isEmpty()) {
+
+                    throw new Exception(
+                            "Authorization token was not received from MOSIP Auth Manager"
+                    );
+                }
+
+                AppLogger.info(
+                        "Authorization token received successfully"
+                );
+
+                // ----------------------------------------------------
+                // 7. Sign Auth request
+                // ----------------------------------------------------
+
+                AppLogger.section("================================");
+                AppLogger.section("SIGNING AUTH REQUEST");
+                AppLogger.section("================================");
+
+                String signature =
+                        partnerSignatureService.sign(
+                                authRequestJson
+                        );
+
+                if (signature == null
+                        || signature.trim().isEmpty()) {
+
+                    throw new Exception(
+                            "Auth request signature was not generated"
+                    );
+                }
+
+                AppLogger.info(
+                        "Auth signature generated"
+                );
+
+                // ----------------------------------------------------
+                // 8. Send Auth request
+                // ----------------------------------------------------
+
+                AppLogger.section("================================");
+                AppLogger.section("SENDING MOSIP AUTH REQUEST");
+                AppLogger.section("================================");
+
+                AppLogger.d(
+                        "DEBUG: Sending Auth request"
+                );
+
+                mosipAuthService.sendAuthRequest(
+                        authRequestJson,
+                        signature,
+                        authorizationToken
+                );
+
+            } catch (Exception e) {
+
+                AppLogger.error(
+                        "Authentication failed"
+                );
+
+                runOnUiThread(() ->
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Authentication failed. Check logs.",
+                                Toast.LENGTH_LONG
+                        ).show()
                 );
             }
 
-
-            else if (
-                    selected.equals("Right Iris")) {
-
-                bio.setCount("1");
-
-                bio.setBioSubType(
-                        new String[]{
-                                "Right"
-                        }
-                );
-            }
-
-
-            else {
-
-                /*
-                 * Both Iris
-                 */
-
-                bio.setCount("2");
-
-                bio.setBioSubType(
-                        new String[]{
-                                "Left",
-                                "Right"
-                        }
-                );
-            }
-        }
-
-
-        // ------------------------------------------------------------
-        // FACE
-        // ------------------------------------------------------------
-
-        else if (modality.equals("Face")) {
-
-            /*
-             * Face is always count 1.
-             *
-             * MOSIP specification says Face has
-             * no bioSubType.
-             */
-
-            bio.setCount("1");
-        }
+        }).start();
     }
 }

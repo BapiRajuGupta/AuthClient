@@ -114,12 +114,54 @@
         app:layout_constraintTop_toBottomOf="@id/discoverButton" />
 
     <Button
+        android:id="@+id/authButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Auth"
+        android:layout_marginStart="30dp"
+        app:layout_constraintStart_toEndOf="@id/captureButton"
+        app:layout_constraintTop_toTopOf="@id/captureButton" />
+
+    <Button
         android:id="@+id/resetButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Reset"
         android:layout_marginStart="30dp"
-        app:layout_constraintStart_toEndOf="@id/captureButton"
-        app:layout_constraintTop_toTopOf="@id/captureButton" />
+        app:layout_constraintStart_toEndOf="@id/authButton"
+        app:layout_constraintTop_toTopOf="@id/authButton" />
+
+    <TextView
+        android:id="@+id/otpAuthText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="OTP Authentication"
+        android:textSize="18sp"
+        android:layout_marginStart="40dp"
+        android:layout_marginTop="30dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/resetButton" />
+
+    <Button
+        android:id="@+id/requestOtpButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Request OTP"
+        android:layout_marginStart="40dp"
+        android:layout_marginTop="15dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/otpAuthText" />
+
+    <EditText
+        android:id="@+id/otpEditText"
+        android:layout_width="130dp"
+        android:layout_height="wrap_content"
+        android:hint="Enter OTP"
+        android:inputType="number"
+        android:enabled="false"
+        android:maxLength="10"
+        android:layout_marginStart="20dp"
+        app:layout_constraintStart_toEndOf="@id/requestOtpButton"
+        app:layout_constraintTop_toTopOf="@id/requestOtpButton" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

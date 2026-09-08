@@ -37,6 +37,7 @@ dependencies {
     implementation(libs.constraintlayout)
     implementation(libs.material)
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.2")
+    implementation("org.bitbucket.b_c:jose4j:0.9.6")
     testImplementation(libs.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.ext.junit)
