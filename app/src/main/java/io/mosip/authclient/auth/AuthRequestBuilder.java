@@ -369,6 +369,142 @@ public class AuthRequestBuilder {
         );
     }
 
+    public String buildAuthRequest(
+            MosipCryptoService.EncryptionResult encryptionResult,
+            String transactionId,
+            boolean hasBiometrics,
+            boolean hasOtp,
+            String individualId,
+            String individualIdType
+    ) throws JsonProcessingException {
+
+        if (encryptionResult == null) {
+            throw new IllegalArgumentException(
+                    "Encryption result is null"
+            );
+        }
+
+        if (!hasBiometrics && !hasOtp) {
+            throw new IllegalArgumentException(
+                    "At least one authentication method is required"
+            );
+        }
+
+        if (individualId == null
+                || individualId.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Individual ID is required"
+            );
+        }
+
+        if (individualIdType == null
+                || individualIdType.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Individual ID type is required"
+            );
+        }
+
+        ObjectNode authRequest =
+                objectMapper.createObjectNode();
+
+        authRequest.put(
+                "id",
+                MosipConfig.AUTH_ID
+        );
+
+        authRequest.put(
+                "version",
+                MosipConfig.AUTH_VERSION
+        );
+
+        authRequest.put(
+                "requestTime",
+                getCurrentUtcTimestamp()
+        );
+
+        authRequest.put(
+                "transactionID",
+                MosipConfig.TRANSACTION_ID
+        );
+
+        authRequest.put(
+                "consentObtained",
+                true
+        );
+
+        authRequest.put(
+                "individualId",
+                individualId
+        );
+
+        authRequest.put(
+                "individualIdType",
+                individualIdType
+        );
+
+        ObjectNode requestedAuth =
+                objectMapper.createObjectNode();
+
+        requestedAuth.put(
+                "bio",
+                hasBiometrics
+        );
+
+        requestedAuth.put(
+                "otp",
+                hasOtp
+        );
+
+        requestedAuth.put(
+                "demo",
+                false
+        );
+
+        requestedAuth.put(
+                "pin",
+                false
+        );
+
+        authRequest.set(
+                "requestedAuth",
+                requestedAuth
+        );
+
+        authRequest.put(
+                "env",
+                MosipConfig.ENVIRONMENT
+        );
+
+        authRequest.put(
+                "domainUri",
+                MosipConfig.DOMAIN_URI
+        );
+
+        authRequest.put(
+                "request",
+                encryptionResult.encryptedIdentity
+        );
+
+        authRequest.put(
+                "requestSessionKey",
+                encryptionResult.encryptedSessionKey
+        );
+
+        authRequest.put(
+                "requestHMAC",
+                encryptionResult.requestHmac
+        );
+
+        authRequest.put(
+                "thumbprint",
+                encryptionResult.thumbprint
+        );
+
+        return objectMapper.writeValueAsString(
+                authRequest
+        );
+    }
+
     // ============================================================
     // UTC TIMESTAMP
     // ============================================================

@@ -1,5 +1,7 @@
 package io.mosip.authclient.auth;
 
+import android.content.Context;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -11,7 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
-import io.mosip.authclient.config.MosipConfig;
+import io.mosip.authclient.config.SettingsStore;
 import io.mosip.authclient.crypto.CertificateService;
 import io.mosip.authclient.util.AppLogger;
 
@@ -19,11 +21,15 @@ public class AuthManagerService
         implements CertificateService.MosipAuthManagerTokenProvider {
 
     private final ObjectMapper objectMapper;
+    private final SettingsStore settingsStore;
 
     public AuthManagerService(
+            Context context,
             ObjectMapper objectMapper
     ) {
         this.objectMapper = objectMapper;
+        this.settingsStore =
+                new SettingsStore(context, objectMapper);
     }
 
     @Override
@@ -34,9 +40,16 @@ public class AuthManagerService
                 "GETTING AUTH MANAGER TOKEN"
         );
 
+        // ------------------------------------------------------------
+        // Load current settings
+        // ------------------------------------------------------------
+
+        SettingsStore.Settings settings =
+                settingsStore.load();
+
         URL url =
                 new URL(
-                        MosipConfig.AUTH_MANAGER_URL
+                        settings.authManagerUrl
                 );
 
         HttpURLConnection connection =
@@ -78,17 +91,17 @@ public class AuthManagerService
 
         requestBody.put(
                 "clientId",
-                MosipConfig.AUTH_MANAGER_CLIENT_ID
+                settings.authManagerClientId
         );
 
         requestBody.put(
                 "secretKey",
-                MosipConfig.AUTH_MANAGER_SECRET_KEY
+                settings.authManagerSecret
         );
 
         requestBody.put(
                 "appId",
-                MosipConfig.AUTH_MANAGER_APP_ID
+                settings.authManagerAppId
         );
 
         ObjectNode wrapper =
@@ -115,7 +128,7 @@ public class AuthManagerService
 
         AppLogger.info(
                 "Auth Manager URL: "
-                        + MosipConfig.AUTH_MANAGER_URL
+                        + settings.authManagerUrl
         );
 
         // Do NOT log requestJson because it contains secretKey.

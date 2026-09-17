@@ -1126,7 +1126,8 @@ public class SbiService {
         } catch (Exception e) {
 
             AppLogger.error(
-                    "JWT decode failed"
+                    "JWT decode failed",
+                    e
             );
 
             return null;

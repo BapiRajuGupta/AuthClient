@@ -17,6 +17,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 import io.mosip.authclient.config.MosipConfig;
+import io.mosip.authclient.config.SettingsStore;
 import io.mosip.authclient.crypto.PartnerSignatureService;
 import io.mosip.authclient.util.AppLogger;
 
@@ -47,6 +48,8 @@ public class OtpService {
     }
 
     public void requestOtp(
+            String individualId,
+            String individualIdType,
             OtpCallback callback
     ) {
 
@@ -59,6 +62,12 @@ public class OtpService {
                 AppLogger.section(
                         "REQUESTING OTP"
                 );
+
+                SettingsStore.Settings settings =
+                        new SettingsStore(
+                                context,
+                                objectMapper
+                        ).load();
 
                 // ----------------------------------------------------
                 // 1. Build OTP request
@@ -89,22 +98,22 @@ public class OtpService {
 
                 otpRequest.put(
                         "env",
-                        MosipConfig.ENVIRONMENT
+                        settings.environment
                 );
 
                 otpRequest.put(
                         "domainUri",
-                        MosipConfig.DOMAIN_URI
+                        settings.domainUri
                 );
 
                 otpRequest.put(
                         "individualId",
-                        MosipConfig.INDIVIDUAL_ID
+                        individualId
                 );
 
                 otpRequest.put(
                         "individualIdType",
-                        MosipConfig.INDIVIDUAL_ID_TYPE
+                        individualIdType
                 );
 
                 // Windows Auth Client behavior:
@@ -166,9 +175,18 @@ public class OtpService {
                 // 4. Send OTP request
                 // ----------------------------------------------------
 
+                String otpUrl =
+                        settings.baseUrl
+                                + "/idauthentication/v1/otp/"
+                                + settings.mispLicenseKey
+                                + "/"
+                                + settings.partnerId
+                                + "/"
+                                + settings.partnerApiKey;
+
                 URL url =
                         new URL(
-                                MosipConfig.OTP_URL
+                                otpUrl
                         );
 
                 connection =
@@ -313,7 +331,8 @@ public class OtpService {
             } catch (Exception e) {
 
                 AppLogger.error(
-                        "OTP REQUEST FAILED"
+                        "OTP REQUEST FAILED",
+                        e
                 );
 
                 runOnUiThread(() -> {

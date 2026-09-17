@@ -1,9 +1,13 @@
 package io.mosip.authclient.auth;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.Toast;
 
-import io.mosip.authclient.config.MosipConfig;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.mosip.authclient.config.SettingsStore;
 import io.mosip.authclient.util.AppLogger;
 
 import java.io.InputStream;
@@ -15,9 +19,18 @@ import java.nio.charset.StandardCharsets;
 public class MosipAuthService {
 
     private final Context context;
+    private final SettingsStore settingsStore;
 
     public MosipAuthService(Context context) {
-        this.context = context.getApplicationContext();
+
+        this.context =
+                context.getApplicationContext();
+
+        this.settingsStore =
+                new SettingsStore(
+                        context,
+                        new ObjectMapper()
+                );
     }
 
     public void sendAuthRequest(
@@ -32,19 +45,42 @@ public class MosipAuthService {
 
             try {
 
-                AppLogger.section("SENDING MOSIP AUTH REQUEST");
+                AppLogger.section(
+                        "SENDING MOSIP AUTH REQUEST"
+                );
 
-                URL url = new URL(MosipConfig.AUTH_URL);
+                // ----------------------------------------------------
+                // Load current settings
+                // ----------------------------------------------------
+
+                SettingsStore.Settings settings =
+                        settingsStore.load();
+
+                String authUrl =
+                        settings.baseUrl
+                                + "/idauthentication/v1/auth/"
+                                + settings.mispLicenseKey
+                                + "/"
+                                + settings.partnerId
+                                + "/"
+                                + settings.partnerApiKey;
+
+                URL url =
+                        new URL(authUrl);
 
                 connection =
-                        (HttpURLConnection) url.openConnection();
+                        (HttpURLConnection)
+                                url.openConnection();
 
                 connection.setRequestMethod("POST");
                 connection.setConnectTimeout(30000);
                 connection.setReadTimeout(30000);
                 connection.setDoOutput(true);
 
+                // ----------------------------------------------------
                 // MOSIP Authorization
+                // ----------------------------------------------------
+
                 connection.setRequestProperty(
                         "Authorization",
                         "Authorization=" + authorizationToken
@@ -55,7 +91,10 @@ public class MosipAuthService {
                         "Authorization=" + authorizationToken
                 );
 
+                // ----------------------------------------------------
                 // Detached JWS signature
+                // ----------------------------------------------------
+
                 connection.setRequestProperty(
                         "Signature",
                         signature
@@ -96,16 +135,19 @@ public class MosipAuthService {
                 if (responseCode >= 200
                         && responseCode < 300) {
 
-                    stream = connection.getInputStream();
+                    stream =
+                            connection.getInputStream();
 
                 } else {
 
-                    stream = connection.getErrorStream();
+                    stream =
+                            connection.getErrorStream();
                 }
 
                 String responseText = "";
 
                 if (stream != null) {
+
                     responseText =
                             new String(
                                     readBytes(stream),
@@ -114,9 +156,11 @@ public class MosipAuthService {
                 }
 
                 // Do not log the complete MOSIP response.
+                // It may contain sensitive authentication information.
                 AppLogger.info(
                         "MOSIP auth response received"
                 );
+
                 AppLogger.info(
                         responseText
                 );
@@ -149,7 +193,8 @@ public class MosipAuthService {
             } catch (Exception e) {
 
                 AppLogger.error(
-                        "MOSIP AUTH REQUEST FAILED"
+                        "MOSIP AUTH REQUEST FAILED",
+                        e
                 );
 
                 runOnUiThread(() -> {
@@ -172,10 +217,12 @@ public class MosipAuthService {
         }).start();
     }
 
-    private byte[] readBytes(InputStream inputStream)
-            throws Exception {
+    private byte[] readBytes(
+            InputStream inputStream
+    ) throws Exception {
 
-        byte[] buffer = new byte[8192];
+        byte[] buffer =
+                new byte[8192];
 
         java.io.ByteArrayOutputStream outputStream =
                 new java.io.ByteArrayOutputStream();
@@ -195,10 +242,12 @@ public class MosipAuthService {
         return outputStream.toByteArray();
     }
 
-    private void runOnUiThread(Runnable action) {
-        if (context instanceof android.app.Activity) {
-            ((android.app.Activity) context)
-                    .runOnUiThread(action);
-        }
+    private void runOnUiThread(
+            Runnable action
+    ) {
+
+        new Handler(
+                Looper.getMainLooper()
+        ).post(action);
     }
 }

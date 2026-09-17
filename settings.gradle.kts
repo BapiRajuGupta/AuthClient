@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AuthClient"
+rootProject.name = "AndroidAuthClient"
 include(":app")

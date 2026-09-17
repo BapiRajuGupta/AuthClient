@@ -39,7 +39,7 @@ public final class AppLogger {
     public static void warning(String message) {
         Log.w(TAG, "[WARNING] " + message);
     }
-    public static void error(String message) {
-        Log.e(TAG, "[ERROR] " + message);
+    public static void error(String message, Exception e) {
+        Log.e(TAG, "[ERROR] " + message + " : " + e);
     }
 }

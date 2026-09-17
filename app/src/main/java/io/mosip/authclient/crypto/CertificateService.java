@@ -6,7 +6,7 @@ import android.util.Base64;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import io.mosip.authclient.config.MosipConfig;
+import io.mosip.authclient.config.SettingsStore;
 import io.mosip.authclient.util.AppLogger;
 
 import java.io.ByteArrayInputStream;
@@ -22,6 +22,7 @@ public class CertificateService {
     private final Context context;
     private final ObjectMapper objectMapper;
     private final MosipAuthManagerTokenProvider tokenProvider;
+    private final SettingsStore settingsStore;
 
     public CertificateService(
             Context context,
@@ -31,6 +32,7 @@ public class CertificateService {
         this.context = context;
         this.objectMapper = objectMapper;
         this.tokenProvider = tokenProvider;
+        this.settingsStore = new SettingsStore(context, objectMapper);
     }
 
     public X509Certificate getMosipCertificate()
@@ -43,9 +45,12 @@ public class CertificateService {
         String authorizationToken =
                 tokenProvider.getAuthManagerToken();
 
+        SettingsStore.Settings settings =
+                settingsStore.load();
+
         URL url =
                 new URL(
-                        MosipConfig.CERTIFICATE_URL
+                        settings.certificateUrl
                 );
 
         HttpURLConnection connection =

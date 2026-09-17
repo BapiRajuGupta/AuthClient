@@ -3,6 +3,8 @@ package io.mosip.authclient;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -23,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.InputStream;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +35,7 @@ import io.mosip.authclient.auth.AuthRequestBuilder;
 import io.mosip.authclient.auth.MosipAuthService;
 import io.mosip.authclient.auth.OtpService;
 import io.mosip.authclient.config.MosipConfig;
+import io.mosip.authclient.config.SettingsStore;
 import io.mosip.authclient.crypto.CertificateService;
 import io.mosip.authclient.crypto.MosipCryptoService;
 import io.mosip.authclient.crypto.PartnerSignatureService;
@@ -46,6 +50,8 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_INFO = 101;
     private static final int REQUEST_CAPTURE = 102;
 
+    private static final int P12_FILE_REQUEST_CODE = 200;
+
     // ------------------------------------------------------------
     // UI
     // ------------------------------------------------------------
@@ -53,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
     private CheckBox fingerCheckBox;
     private CheckBox faceCheckBox;
     private CheckBox irisCheckBox;
+    private CheckBox otpCheckBox;
 
     private Button discoverButton;
     private Button infoButton;
@@ -62,9 +69,47 @@ public class MainActivity extends AppCompatActivity {
     private Button resetButton;
 
     private EditText otpEditText;
+    private EditText individualIdEditText;
+    private EditText individualIdTypeEditText;
+
+    private View authenticationTab;
+    private View settingsTab;
+
+    private View authScrollView;
+    private View settingsScrollView;
+
+    private View fingerOptionsSection;
+    private View irisOptionsSection;
+    private View otpSection;
 
     private Spinner fingerCountSpinner;
     private Spinner irisTypeSpinner;
+
+    // --------------------------------------------------------
+    // Settings UI elements
+    // --------------------------------------------------------
+
+    private EditText baseUrlEditText;
+    private EditText domainUriEditText;
+    private Spinner environmentSpinner;
+
+    private EditText authManagerUrlEditText;
+    private EditText authManagerClientIdEditText;
+    private EditText authManagerSecretEditText;
+    private EditText authManagerAppIdEditText;
+    private EditText certificateUrlEditText;
+
+    private EditText mispLicenseKeyEditText;
+    private EditText partnerIdEditText;
+    private EditText partnerApiKeyEditText;
+
+    private EditText p12FileEditText;
+    private EditText p12PasswordEditText;
+    private EditText p12AliasEditText;
+
+    private Button browseP12Button;
+    private Button settingsSaveButton;
+    private Button settingsCancelButton;
 
 
     // ------------------------------------------------------------
@@ -121,6 +166,8 @@ public class MainActivity extends AppCompatActivity {
     private PartnerSignatureService partnerSignatureService;
     private OtpService otpService;
     private MosipAuthService mosipAuthService;
+    private SettingsStore settingsStore;
+    private SettingsStore.Settings currentSettings;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -139,6 +186,7 @@ public class MainActivity extends AppCompatActivity {
 
         authManagerService =
                 new AuthManagerService(
+                        this,
                         objectMapper
                 );
 
@@ -167,6 +215,11 @@ public class MainActivity extends AppCompatActivity {
                 partnerSignatureService
         );
 
+        settingsStore = new SettingsStore(
+                this,
+                objectMapper
+        );
+
 
         // --------------------------------------------------------
         // UI references
@@ -180,6 +233,9 @@ public class MainActivity extends AppCompatActivity {
 
         irisCheckBox =
                 findViewById(R.id.irisCheckBox);
+
+        otpCheckBox =
+                findViewById(R.id.otpCheckBox);
 
         fingerCountSpinner =
                 findViewById(R.id.fingerCountSpinner);
@@ -208,9 +264,236 @@ public class MainActivity extends AppCompatActivity {
         otpEditText =
                 findViewById(R.id.otpEditText);
 
+        individualIdEditText =
+                findViewById(R.id.individualIdEditText);
+
+        individualIdTypeEditText =
+                findViewById(R.id.individualIdTypeEditText);
+
+        authenticationTab =
+                findViewById(R.id.authenticationTab);
+
+        settingsTab =
+                findViewById(R.id.settingsTab);
+
+        authScrollView =
+                findViewById(R.id.authScrollView);
+
+        settingsScrollView =
+                findViewById(R.id.settingsScrollView);
+
+        fingerOptionsSection =
+                findViewById(R.id.fingerOptionsSection);
+
+        irisOptionsSection =
+                findViewById(R.id.irisOptionsSection);
+
+        otpSection =
+                findViewById(R.id.otpSection);
+
+        // --------------------------------------------------------
+        // Settings UI elements
+        // --------------------------------------------------------
+
+        baseUrlEditText =
+                findViewById(R.id.baseUrlEditText);
+
+        domainUriEditText =
+                findViewById(R.id.domainUriEditText);
+
+        environmentSpinner =
+                findViewById(R.id.environmentSpinner);
+
+        authManagerUrlEditText =
+                findViewById(R.id.authManagerUrlEditText);
+
+        authManagerClientIdEditText =
+                findViewById(R.id.authManagerClientIdEditText);
+
+        authManagerSecretEditText =
+                findViewById(R.id.authManagerSecretEditText);
+
+        authManagerAppIdEditText =
+                findViewById(R.id.authManagerAppIdEditText);
+
+        certificateUrlEditText =
+                findViewById(R.id.certificateUrlEditText);
+
+        mispLicenseKeyEditText =
+                findViewById(R.id.mispLicenseKeyEditText);
+
+        partnerIdEditText =
+                findViewById(R.id.partnerIdEditText);
+
+        partnerApiKeyEditText =
+                findViewById(R.id.partnerApiKeyEditText);
+
+        p12FileEditText =
+                findViewById(R.id.p12FileEditText);
+
+        p12PasswordEditText =
+                findViewById(R.id.p12PasswordEditText);
+
+        p12AliasEditText =
+                findViewById(R.id.p12AliasEditText);
+
+        browseP12Button =
+                findViewById(R.id.browseP12Button);
+
+        settingsSaveButton =
+                findViewById(R.id.settingsSaveButton);
+
+        settingsCancelButton =
+                findViewById(R.id.settingsCancelButton);
+
+        setupEnvironmentSpinner();
+        loadSettingsIntoUi();
+
         setupFingerCountSpinner();
         setupIrisTypeSpinner();
 
+        // --------------------------------------------------------
+        // Initial authentication UI state
+        // --------------------------------------------------------
+
+        setSectionEnabled(
+               fingerOptionsSection,
+                        false
+                );
+
+        setSectionEnabled(
+                        irisOptionsSection,
+                        false
+                );
+
+        setSectionEnabled(
+                        otpSection,
+                        false
+                );
+
+        authButton.setEnabled(false);
+        captureButton.setEnabled(false);
+
+        // --------------------------------------------------------
+        // Authentication method selection
+        // --------------------------------------------------------
+
+        fingerCheckBox.setOnCheckedChangeListener(
+                (buttonView, isChecked) -> {
+
+                    setSectionEnabled(
+                            fingerOptionsSection,
+                            isChecked
+                    );
+
+                    updateAuthenticationButtons();
+                }
+        );
+
+        faceCheckBox.setOnCheckedChangeListener(
+                (buttonView, isChecked) -> {
+
+                    updateAuthenticationButtons();
+                }
+        );
+
+        irisCheckBox.setOnCheckedChangeListener(
+                (buttonView, isChecked) -> {
+
+                    setSectionEnabled(
+                            irisOptionsSection,
+                            isChecked
+                    );
+
+                    updateAuthenticationButtons();
+                }
+        );
+
+        otpCheckBox.setOnCheckedChangeListener(
+                (buttonView, isChecked) -> {
+
+                    if (isChecked) {
+
+                        // Enable OTP section
+                        otpSection.setEnabled(true);
+
+                        // Enable its children
+                        for (int i = 0;
+                             i < ((android.view.ViewGroup) otpSection).getChildCount();
+                             i++) {
+
+                            ((android.view.ViewGroup) otpSection)
+                                    .getChildAt(i)
+                                    .setEnabled(true);
+                        }
+
+                        // OTP input must remain disabled
+                        // until Request OTP succeeds.
+                        otpEditText.setEnabled(false);
+
+                    } else {
+
+                        // Disable entire OTP section
+                        setSectionEnabled(
+                                otpSection,
+                                false
+                        );
+
+                        otpEditText.setText("");
+                        otpEditText.setEnabled(false);
+                    }
+
+                    updateAuthenticationButtons();
+                }
+        );
+
+        otpEditText.addTextChangedListener(
+                new TextWatcher() {
+
+                    @Override
+                    public void beforeTextChanged(
+                            CharSequence s,
+                            int start,
+                            int count,
+                            int after
+                    ) {
+                    }
+
+                    @Override
+                    public void onTextChanged(
+                            CharSequence s,
+                            int start,
+                            int before,
+                            int count
+                    ) {
+
+                        updateAuthenticationButtons();
+                    }
+
+                    @Override
+                    public void afterTextChanged(
+                            Editable s
+                    ) {
+                    }
+                }
+        );
+
+        // --------------------------------------------------------
+        // Top tabs
+        // --------------------------------------------------------
+
+        authenticationTab.setOnClickListener(
+                view -> showAuthenticationPage()
+        );
+
+        settingsTab.setOnClickListener(
+                view -> {
+
+                    loadSettingsIntoUi();
+
+                    showSettingsPage();
+                }
+        );
 
         // --------------------------------------------------------
         // Window insets
@@ -314,8 +597,207 @@ public class MainActivity extends AppCompatActivity {
                 }
         );
 
+        // --------------------------------------------------------
+        // Mapping Setting Save & Cancel buttons
+        // --------------------------------------------------------
+
+        settingsSaveButton.setOnClickListener(
+                view -> saveSettings()
+        );
+
+        settingsCancelButton.setOnClickListener(
+                view -> cancelSettings()
+        );
+
+
+        browseP12Button.setOnClickListener(
+                view -> {
+
+                    Intent intent =
+                            new Intent(
+                                    Intent.ACTION_OPEN_DOCUMENT
+                            );
+
+                    intent.addCategory(
+                            Intent.CATEGORY_OPENABLE
+                    );
+
+                    intent.setType(
+                            "application/x-pkcs12"
+                    );
+
+                    startActivityForResult(
+                            intent,
+                            P12_FILE_REQUEST_CODE
+                    );
+                }
+        );
+
         // Start SBI discovery automatically
         startDiscoverySequence();
+    }
+
+    // ============================================================
+// PAGE NAVIGATION
+// ============================================================
+
+    private void showAuthenticationPage() {
+
+        authScrollView.setVisibility(
+                View.VISIBLE
+        );
+
+        settingsScrollView.setVisibility(
+                View.GONE
+        );
+
+        authenticationTab.setBackgroundColor(
+                android.graphics.Color.rgb(
+                        36,
+                        81,
+                        166
+                )
+        );
+
+        authenticationTab.setForeground(
+                null
+        );
+
+        settingsTab.setBackgroundColor(
+                android.graphics.Color.WHITE
+        );
+
+        if (authenticationTab instanceof android.widget.TextView) {
+
+            ((android.widget.TextView) authenticationTab)
+                    .setTextColor(
+                            android.graphics.Color.WHITE
+                    );
+        }
+
+        if (settingsTab instanceof android.widget.TextView) {
+
+            ((android.widget.TextView) settingsTab)
+                    .setTextColor(
+                            android.graphics.Color.rgb(
+                                    34,
+                                    34,
+                                    34
+                            )
+                    );
+        }
+    }
+
+
+    private void showSettingsPage() {
+
+        authScrollView.setVisibility(
+                View.GONE
+        );
+
+        settingsScrollView.setVisibility(
+                View.VISIBLE
+        );
+
+        settingsTab.setBackgroundColor(
+                android.graphics.Color.rgb(
+                        36,
+                        81,
+                        166
+                )
+        );
+
+        authenticationTab.setBackgroundColor(
+                android.graphics.Color.WHITE
+        );
+
+        if (settingsTab instanceof android.widget.TextView) {
+
+            ((android.widget.TextView) settingsTab)
+                    .setTextColor(
+                            android.graphics.Color.WHITE
+                    );
+        }
+
+        if (authenticationTab instanceof android.widget.TextView) {
+
+            ((android.widget.TextView) authenticationTab)
+                    .setTextColor(
+                            android.graphics.Color.rgb(
+                                    34,
+                                    34,
+                                    34
+                            )
+                    );
+        }
+    }
+
+    private void setSectionEnabled(
+            View view,
+            boolean enabled
+    ) {
+
+        view.setEnabled(enabled);
+
+        if (view instanceof android.view.ViewGroup) {
+
+            android.view.ViewGroup viewGroup =
+                    (android.view.ViewGroup) view;
+
+            for (int i = 0;
+                 i < viewGroup.getChildCount();
+                 i++) {
+
+                setSectionEnabled(
+                        viewGroup.getChildAt(i),
+                        enabled
+                );
+            }
+        }
+    }
+
+    private void updateAuthenticationButtons() {
+
+        boolean biometricSelected =
+                fingerCheckBox.isChecked()
+                        || faceCheckBox.isChecked()
+                        || irisCheckBox.isChecked();
+
+        boolean otpSelected =
+                otpCheckBox.isChecked();
+
+        // --------------------------------------------------------
+        // Capture
+        // --------------------------------------------------------
+
+        captureButton.setEnabled(
+                biometricSelected
+        );
+
+        // --------------------------------------------------------
+        // Authenticate
+        // --------------------------------------------------------
+
+        boolean biometricReady =
+                biometricSelected
+                        && combinedBiometrics != null
+                        && !combinedBiometrics
+                        .trim()
+                        .isEmpty();
+
+        boolean otpReady =
+                otpSelected
+                        && otpEditText != null
+                        && !otpEditText
+                        .getText()
+                        .toString()
+                        .trim()
+                        .isEmpty();
+
+        authButton.setEnabled(
+                biometricReady
+                        || otpReady
+        );
     }
 
 
@@ -367,7 +849,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (sbiService == null) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI service is not initialized"
             );
 
@@ -496,7 +978,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (sbiService == null) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI service is not initialized"
             );
 
@@ -647,7 +1129,7 @@ public class MainActivity extends AppCompatActivity {
 
             if (combinedBiometrics == null) {
 
-                AppLogger.error(
+                AppLogger.warning(
                         "Failed to combine biometric responses"
                 );
 
@@ -747,7 +1229,8 @@ public class MainActivity extends AppCompatActivity {
         } catch (JsonProcessingException e) {
 
             AppLogger.error(
-                    "Unable to create biometric request"
+                    "Unable to create biometric request",
+                    e
             );
 
             return null;
@@ -759,7 +1242,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (sbiService == null) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI service is not initialized"
             );
 
@@ -796,7 +1279,7 @@ public class MainActivity extends AppCompatActivity {
 
         } else {
 
-            AppLogger.error(
+            AppLogger.info(
                     "Unsupported biometric modality: "
                             + modality
             );
@@ -917,6 +1400,110 @@ public class MainActivity extends AppCompatActivity {
                 data
         );
 
+        // ========================================================
+// P12 FILE SELECTION
+// ========================================================
+
+        if (requestCode == P12_FILE_REQUEST_CODE) {
+
+            if (resultCode == RESULT_OK
+                    && data != null
+                    && data.getData() != null) {
+
+                Uri uri =
+                        data.getData();
+
+                try {
+
+                    String fileName =
+                            "partner.p12";
+
+                    java.io.File p12Directory =
+                            new java.io.File(
+                                    getFilesDir(),
+                                    "certificates"
+                            );
+
+                    if (!p12Directory.exists()) {
+
+                        if (!p12Directory.mkdirs()) {
+
+                            throw new Exception(
+                                    "Unable to create P12 directory"
+                            );
+                        }
+                    }
+
+                    java.io.File destinationFile =
+                            new java.io.File(
+                                    p12Directory,
+                                    fileName
+                            );
+
+                    try (
+                            InputStream inputStream =
+                                    getContentResolver()
+                                            .openInputStream(uri);
+
+                            java.io.FileOutputStream outputStream =
+                                    new java.io.FileOutputStream(
+                                            destinationFile
+                                    )
+                    ) {
+
+                        if (inputStream == null) {
+
+                            throw new Exception(
+                                    "Unable to open selected P12 file"
+                            );
+                        }
+
+                        byte[] buffer =
+                                new byte[8192];
+
+                        int length;
+
+                        while ((length =
+                                inputStream.read(buffer)) != -1) {
+
+                            outputStream.write(
+                                    buffer,
+                                    0,
+                                    length
+                            );
+                        }
+
+                        outputStream.flush();
+                    }
+
+                    p12FileEditText.setText(
+                            destinationFile.getAbsolutePath()
+                    );
+
+                    Toast.makeText(
+                            this,
+                            "P12 file selected successfully",
+                            Toast.LENGTH_SHORT
+                    ).show();
+
+                } catch (Exception e) {
+
+                    AppLogger.error(
+                            "Unable to copy P12 file",
+                            e
+                    );
+
+                    Toast.makeText(
+                            this,
+                            "Unable to load P12 file",
+                            Toast.LENGTH_LONG
+                    ).show();
+                }
+            }
+
+            return;
+        }
+
         if (requestCode == REQUEST_DISCOVERY) {
 
             handleDiscoveryResult(
@@ -975,7 +1562,7 @@ public class MainActivity extends AppCompatActivity {
         if (response == null
                 || response.length == 0) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI discovery returned an empty response"
             );
 
@@ -1026,7 +1613,8 @@ public class MainActivity extends AppCompatActivity {
             AppLogger.error(
                     "Unable to process "
                             + modality
-                            + " discovery response"
+                            + " discovery response",
+                    e
             );
 
             Toast.makeText(
@@ -1068,7 +1656,7 @@ public class MainActivity extends AppCompatActivity {
         if (response == null
                 || response.length == 0) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI device information response is empty"
             );
 
@@ -1129,7 +1717,8 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
 
             AppLogger.error(
-                    "Unable to process SBI device information"
+                    "Unable to process SBI device information",
+                    e
             );
 
             Toast.makeText(
@@ -1148,7 +1737,7 @@ public class MainActivity extends AppCompatActivity {
                 || data == null
                 || !data.hasExtra("response")) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI capture failed or was cancelled"
             );
 
@@ -1168,7 +1757,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (uri == null) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "SBI capture response URI not found"
             );
 
@@ -1183,7 +1772,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (captureIndex >= captureModalities.size()) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "Invalid capture index: "
                             + captureIndex
             );
@@ -1217,7 +1806,7 @@ public class MainActivity extends AppCompatActivity {
 
             if (biometricObjects.isEmpty()) {
 
-                AppLogger.error(
+                AppLogger.info(
                         modality
                                 + " response contains no biometric data"
                 );
@@ -1258,7 +1847,7 @@ public class MainActivity extends AppCompatActivity {
                     if (!"0".equals(errorCode)
                             && !"100".equals(errorCode)) {
 
-                        AppLogger.error(
+                        AppLogger.info(
                                 modality
                                         + " capture failed: "
                                         + errorInfo
@@ -1315,7 +1904,7 @@ public class MainActivity extends AppCompatActivity {
 
         } catch (Exception e) {
 
-            AppLogger.error(
+            AppLogger.info(
                     "Unable to process "
                             + modality
                             + " capture response"
@@ -1373,6 +1962,20 @@ public class MainActivity extends AppCompatActivity {
         fingerCheckBox.setChecked(false);
         faceCheckBox.setChecked(false);
         irisCheckBox.setChecked(false);
+
+        otpCheckBox.setChecked(false);
+
+        otpEditText.setText("");
+        otpEditText.setEnabled(false);
+        individualIdEditText.setText("");
+        individualIdTypeEditText.setText("UIN");
+
+        combinedBiometrics = null;
+        capturedBiometrics.clear();
+        previousHash = "";
+
+        captureButton.setEnabled(false);
+        authButton.setEnabled(false);
 
 
         AppLogger.info(
@@ -1465,6 +2068,8 @@ public class MainActivity extends AppCompatActivity {
         );
 
         otpService.requestOtp(
+                individualIdEditText.getText().toString().trim(),
+                individualIdTypeEditText.getText().toString().trim(),
                 new OtpService.OtpCallback() {
 
                     @Override
@@ -1475,6 +2080,8 @@ public class MainActivity extends AppCompatActivity {
                         otpEditText.setEnabled(true);
 
                         otpEditText.requestFocus();
+
+                        updateAuthenticationButtons();
 
                         Toast.makeText(
                                 MainActivity.this,
@@ -1564,6 +2171,44 @@ public class MainActivity extends AppCompatActivity {
                                 + hasOtp
                 );
 
+                String individualId =
+                        individualIdEditText
+                                .getText()
+                                .toString()
+                                .trim();
+
+                String individualIdType =
+                        individualIdTypeEditText
+                                .getText()
+                                .toString()
+                                .trim();
+
+                if (individualId.isEmpty()) {
+
+                    runOnUiThread(() ->
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Please enter UIN.",
+                                    Toast.LENGTH_LONG
+                            ).show()
+                    );
+
+                    return;
+                }
+
+                if (individualIdType.isEmpty()) {
+
+                    runOnUiThread(() ->
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Please enter UIN type.",
+                                    Toast.LENGTH_LONG
+                            ).show()
+                    );
+
+                    return;
+                }
+
                 // ----------------------------------------------------
                 // 2. Build identity request
                 // ----------------------------------------------------
@@ -1621,7 +2266,9 @@ public class MainActivity extends AppCompatActivity {
                                 encryptionResult,
                                 MosipConfig.TRANSACTION_ID,
                                 hasBiometrics,
-                                hasOtp
+                                hasOtp,
+                                individualId,
+                                individualIdType
                         );
 
                 AppLogger.info(
@@ -1705,7 +2352,8 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
 
                 AppLogger.error(
-                        "Authentication failed"
+                        "Authentication failed",
+                        e
                 );
 
                 runOnUiThread(() ->
@@ -1718,5 +2366,268 @@ public class MainActivity extends AppCompatActivity {
             }
 
         }).start();
+    }
+
+    private void setupEnvironmentSpinner() {
+
+        String[] environments = {
+                "Production",
+                "Staging"
+        };
+
+        ArrayAdapter<String> adapter =
+                new ArrayAdapter<>(
+                        this,
+                        android.R.layout.simple_spinner_item,
+                        environments
+                );
+
+        adapter.setDropDownViewResource(
+                android.R.layout.simple_spinner_dropdown_item
+        );
+
+        environmentSpinner.setAdapter(adapter);
+    }
+
+    private void loadSettingsIntoUi() {
+
+        try {
+
+            currentSettings =
+                    settingsStore.load();
+
+            baseUrlEditText.setText(
+                    currentSettings.baseUrl
+            );
+
+            domainUriEditText.setText(
+                    currentSettings.domainUri
+            );
+
+            authManagerUrlEditText.setText(
+                    currentSettings.authManagerUrl
+            );
+
+            authManagerClientIdEditText.setText(
+                    currentSettings.authManagerClientId
+            );
+
+            authManagerSecretEditText.setText(
+                    currentSettings.authManagerSecret
+            );
+
+            authManagerAppIdEditText.setText(
+                    currentSettings.authManagerAppId
+            );
+
+            certificateUrlEditText.setText(
+                    currentSettings.certificateUrl
+            );
+
+            mispLicenseKeyEditText.setText(
+                    currentSettings.mispLicenseKey
+            );
+
+            partnerIdEditText.setText(
+                    currentSettings.partnerId
+            );
+
+            partnerApiKeyEditText.setText(
+                    currentSettings.partnerApiKey
+            );
+
+            p12FileEditText.setText(
+                    currentSettings.p12Path
+            );
+
+            p12PasswordEditText.setText(
+                    currentSettings.p12Password
+            );
+
+            p12AliasEditText.setText(
+                    currentSettings.p12Alias
+            );
+
+            setEnvironmentSpinnerValue(
+                    currentSettings.environment
+            );
+
+            AppLogger.info(
+                    "Settings loaded"
+            );
+
+        } catch (Exception e) {
+
+            AppLogger.error(
+                    "Unable to load settings",
+                    e
+            );
+
+            Toast.makeText(
+                    this,
+                    "Unable to load settings",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
+    }
+
+    private void setEnvironmentSpinnerValue(
+            String environment
+    ) {
+
+        if (environment == null) {
+            return;
+        }
+
+        ArrayAdapter adapter =
+                (ArrayAdapter)
+                        environmentSpinner.getAdapter();
+
+        int position =
+                adapter.getPosition(
+                        environment
+                );
+
+        if (position >= 0) {
+
+            environmentSpinner.setSelection(
+                    position
+            );
+        }
+    }
+
+    private void saveSettings() {
+
+        try {
+
+            SettingsStore.Settings settings =
+                    new SettingsStore.Settings();
+
+            settings.baseUrl =
+                    baseUrlEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.environment =
+                    environmentSpinner
+                            .getSelectedItem()
+                            .toString();
+
+            settings.domainUri =
+                    domainUriEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.authManagerUrl =
+                    authManagerUrlEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.authManagerClientId =
+                    authManagerClientIdEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.authManagerSecret =
+                    authManagerSecretEditText
+                            .getText()
+                            .toString();
+
+            settings.authManagerAppId =
+                    authManagerAppIdEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.certificateUrl =
+                    certificateUrlEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.mispLicenseKey =
+                    mispLicenseKeyEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.partnerId =
+                    partnerIdEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.partnerApiKey =
+                    partnerApiKeyEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.p12Path =
+                    p12FileEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settings.p12Password =
+                    p12PasswordEditText
+                            .getText()
+                            .toString();
+
+            settings.p12Alias =
+                    p12AliasEditText
+                            .getText()
+                            .toString()
+                            .trim();
+
+            settingsStore.save(
+                    settings
+            );
+
+            currentSettings =
+                    settings;
+
+            Toast.makeText(
+                    this,
+                    "Settings saved",
+                    Toast.LENGTH_SHORT
+            ).show();
+
+            AppLogger.success(
+                    "Settings saved successfully"
+            );
+
+            showAuthenticationPage();
+
+        } catch (Exception e) {
+
+            AppLogger.error(
+                    "Unable to save settings",
+                    e
+            );
+
+            Toast.makeText(
+                    this,
+                    "Unable to save settings",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
+    }
+
+    private void cancelSettings() {
+
+        loadSettingsIntoUi();
+
+        showAuthenticationPage();
+
+        Toast.makeText(
+                this,
+                "Changes cancelled",
+                Toast.LENGTH_SHORT
+        ).show();
     }
 }
