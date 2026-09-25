@@ -377,6 +377,14 @@
                     android:text="Reset"
                     android:textAllCaps="false" />
 
+                <Button
+                    android:id="@+id/discoverButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Discover SBIs"
+                    android:textAllCaps="false" />
+
             </LinearLayout>
 
 
@@ -390,11 +398,12 @@
                  They will be removed from Java in the next step.
             -->
 
-            <Button
-                android:id="@+id/discoverButton"
-                android:layout_width="1dp"
-                android:layout_height="1dp"
-                android:visibility="gone" />
+<!--            <Button-->
+<!--                android:id="@+id/discoverButton"-->
+<!--                android:text="Discover SBIs"-->
+<!--                android:layout_width="1dp"-->
+<!--                android:layout_height="1dp"-->
+<!--                android:textAllCaps="false" />-->
 
             <Button
                 android:id="@+id/infoButton"

@@ -10,6 +10,8 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.PrivateKey;
+import java.security.Provider;
+import java.security.Security;
 import java.security.cert.X509Certificate;
 
 import io.mosip.authclient.config.MosipConfig;
@@ -62,9 +64,13 @@ public class PartnerSignatureService {
         // P12 file selection will be connected separately.
         // ------------------------------------------------------------
 
+        Provider bouncyCastleProvider =
+                new org.bouncycastle.jce.provider.BouncyCastleProvider();
+
         KeyStore keyStore =
                 KeyStore.getInstance(
-                        "PKCS12"
+                        "PKCS12",
+                        bouncyCastleProvider
                 );
 
         InputStream inputStream;

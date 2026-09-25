@@ -3,8 +3,8 @@ package io.mosip.authclient.auth;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
-import android.widget.Toast;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.mosip.authclient.config.SettingsStore;
@@ -18,25 +18,45 @@ import java.nio.charset.StandardCharsets;
 
 public class MosipAuthService {
 
+    public interface AuthCallback {
+
+        void onAuthenticationSuccess(
+                String message
+        );
+
+        void onAuthenticationFailed(
+                String message
+        );
+
+        void onAuthenticationError(
+                String message
+        );
+    }
+
     private final Context context;
     private final SettingsStore settingsStore;
+    private final ObjectMapper objectMapper;
 
     public MosipAuthService(Context context) {
 
         this.context =
                 context.getApplicationContext();
 
+        this.objectMapper =
+                new ObjectMapper();
+
         this.settingsStore =
                 new SettingsStore(
                         context,
-                        new ObjectMapper()
+                        objectMapper
                 );
     }
 
     public void sendAuthRequest(
             String authRequestJson,
             String signature,
-            String authorizationToken
+            String authorizationToken,
+            AuthCallback callback
     ) {
 
         new Thread(() -> {
@@ -110,6 +130,10 @@ public class MosipAuthService {
                         "application/json"
                 );
 
+                // ----------------------------------------------------
+                // Send request
+                // ----------------------------------------------------
+
                 byte[] requestBytes =
                         authRequestJson.getBytes(
                                 StandardCharsets.UTF_8
@@ -121,6 +145,10 @@ public class MosipAuthService {
                     outputStream.write(requestBytes);
                     outputStream.flush();
                 }
+
+                // ----------------------------------------------------
+                // Read response
+                // ----------------------------------------------------
 
                 int responseCode =
                         connection.getResponseCode();
@@ -155,38 +183,51 @@ public class MosipAuthService {
                             );
                 }
 
-                // Do not log the complete MOSIP response.
-                // It may contain sensitive authentication information.
+                // Do NOT log complete authentication response.
                 AppLogger.info(
                         "MOSIP auth response received"
                 );
 
-                AppLogger.info(
-                        responseText
-                );
+                // ----------------------------------------------------
+                // Parse MOSIP authentication response
+                // ----------------------------------------------------
 
-                boolean success =
-                        responseCode >= 200
-                                && responseCode < 300;
+                AuthResult authResult =
+                        parseAuthResponse(
+                                responseCode,
+                                responseText
+                        );
+
+                // ----------------------------------------------------
+                // Show result on UI
+                // ----------------------------------------------------
 
                 runOnUiThread(() -> {
 
-                    if (success) {
+                    if (authResult.success) {
 
-                        Toast.makeText(
-                                context,
-                                "Auth request completed",
-                                Toast.LENGTH_LONG
-                        ).show();
+                        AppLogger.success(
+                                "Authentication successful"
+                        );
+
+                        if (callback != null) {
+                            callback.onAuthenticationSuccess(
+                                    authResult.message
+                            );
+                        }
 
                     } else {
 
-                        Toast.makeText(
-                                context,
-                                "Auth failed: "
-                                        + responseCode,
-                                Toast.LENGTH_LONG
-                        ).show();
+                        AppLogger.warning(
+                                "Authentication failed: "
+                                        + authResult.message
+                        );
+
+                        if (callback != null) {
+                            callback.onAuthenticationFailed(
+                                    authResult.message
+                            );
+                        }
                     }
                 });
 
@@ -197,16 +238,13 @@ public class MosipAuthService {
                         e
                 );
 
-                runOnUiThread(() -> {
-
-                    Toast.makeText(
-                            context,
-                            "Auth request failed: "
-                                    + e.getMessage(),
-                            Toast.LENGTH_LONG
-                    ).show();
-                });
-
+                if (callback != null) {
+                    runOnUiThread(() ->
+                            callback.onAuthenticationError(
+                                    "Authentication could not be completed. Please try again."
+                            )
+                    );
+                }
             } finally {
 
                 if (connection != null) {
@@ -216,6 +254,255 @@ public class MosipAuthService {
 
         }).start();
     }
+
+    // ================================================================
+    // Parse MOSIP authentication response
+    // ================================================================
+
+    private AuthResult parseAuthResponse(
+            int responseCode,
+            String responseText
+    ) {
+
+        // ------------------------------------------------------------
+        // HTTP/network/server failure
+        // ------------------------------------------------------------
+
+        if (responseCode < 200
+                || responseCode >= 300) {
+
+            String message =
+                    extractMosipErrorMessage(
+                            responseText
+                    );
+
+            if (message != null
+                    && !message.trim().isEmpty()) {
+
+                return AuthResult.failure(
+                        message
+                );
+            }
+
+            return AuthResult.failure(
+                    "Authentication request failed. "
+                            + "Please try again."
+            );
+        }
+
+        // ------------------------------------------------------------
+        // Empty response
+        // ------------------------------------------------------------
+
+        if (responseText == null
+                || responseText.trim().isEmpty()) {
+
+            return AuthResult.failure(
+                    "No response received from authentication server."
+            );
+        }
+
+        try {
+
+            JsonNode root =
+                    objectMapper.readTree(
+                            responseText
+                    );
+
+            // --------------------------------------------------------
+            // Check response.authStatus
+            // --------------------------------------------------------
+
+            JsonNode responseNode =
+                    root.get("response");
+
+            if (responseNode != null
+                    && responseNode.has("authStatus")) {
+
+                boolean authStatus =
+                        responseNode
+                                .get("authStatus")
+                                .asBoolean(false);
+
+                if (authStatus) {
+
+                    return AuthResult.success();
+                }
+            }
+
+            // --------------------------------------------------------
+            // Authentication failed.
+            // Read MOSIP errors.
+            // --------------------------------------------------------
+
+            String message =
+                    extractMosipErrorMessage(
+                            root
+                    );
+
+            if (message != null
+                    && !message.trim().isEmpty()) {
+
+                return AuthResult.failure(
+                        message
+                );
+            }
+
+            return AuthResult.failure(
+                    "Authentication failed. "
+                            + "Please try again."
+            );
+
+        } catch (Exception e) {
+
+            // Technical parsing problem.
+            AppLogger.error(
+                    "Unable to parse MOSIP authentication response",
+                    e
+            );
+
+            return AuthResult.failure(
+                    "Authentication failed. "
+                            + "Please try again."
+            );
+        }
+    }
+
+    // ================================================================
+    // Extract MOSIP error message
+    // ================================================================
+
+    private String extractMosipErrorMessage(
+            String responseText
+    ) {
+
+        if (responseText == null
+                || responseText.trim().isEmpty()) {
+
+            return null;
+        }
+
+        try {
+
+            JsonNode root =
+                    objectMapper.readTree(
+                            responseText
+                    );
+
+            return extractMosipErrorMessage(
+                    root
+            );
+
+        } catch (Exception e) {
+
+            AppLogger.error(
+                    "Unable to parse MOSIP error response",
+                    e
+            );
+
+            return null;
+        }
+    }
+
+    private String extractMosipErrorMessage(
+            JsonNode root
+    ) {
+
+        if (root == null) {
+            return null;
+        }
+
+        JsonNode errors =
+                root.get("errors");
+
+        if (errors == null
+                || !errors.isArray()
+                || errors.isEmpty()) {
+
+            return null;
+        }
+
+        JsonNode firstError =
+                errors.get(0);
+
+        if (firstError == null) {
+            return null;
+        }
+
+        // ------------------------------------------------------------
+        // Prefer actionMessage because it is intended for user action.
+        // ------------------------------------------------------------
+
+        String actionMessage =
+                getText(
+                        firstError,
+                        "actionMessage"
+                );
+
+        String errorMessage =
+                getText(
+                        firstError,
+                        "errorMessage"
+                );
+
+        String errorCode =
+                getText(
+                        firstError,
+                        "errorCode"
+                );
+
+        if (actionMessage != null
+                && !actionMessage.trim().isEmpty()) {
+
+            return actionMessage;
+        }
+
+        if (errorMessage != null
+                && !errorMessage.trim().isEmpty()) {
+
+            return errorMessage;
+        }
+
+        if (errorCode != null
+                && !errorCode.trim().isEmpty()) {
+
+            return "Authentication failed. "
+                    + "Error code: "
+                    + errorCode;
+        }
+
+        return null;
+    }
+
+    private String getText(
+            JsonNode node,
+            String field
+    ) {
+
+        JsonNode value =
+                node.get(field);
+
+        if (value == null
+                || value.isNull()) {
+
+            return null;
+        }
+
+        String text =
+                value.asText();
+
+        if (text == null
+                || text.trim().isEmpty()) {
+
+            return null;
+        }
+
+        return text.trim();
+    }
+
+    // ================================================================
+    // Read response
+    // ================================================================
 
     private byte[] readBytes(
             InputStream inputStream
@@ -242,6 +529,10 @@ public class MosipAuthService {
         return outputStream.toByteArray();
     }
 
+    // ================================================================
+    // Run on UI thread
+    // ================================================================
+
     private void runOnUiThread(
             Runnable action
     ) {
@@ -249,5 +540,42 @@ public class MosipAuthService {
         new Handler(
                 Looper.getMainLooper()
         ).post(action);
+    }
+
+    // ================================================================
+    // Authentication result
+    // ================================================================
+
+    private static class AuthResult {
+
+        private final boolean success;
+        private final String message;
+
+        private AuthResult(
+                boolean success,
+                String message
+        ) {
+
+            this.success = success;
+            this.message = message;
+        }
+
+        static AuthResult success() {
+
+            return new AuthResult(
+                    true,
+                    "Authentication successful"
+            );
+        }
+
+        static AuthResult failure(
+                String message
+        ) {
+
+            return new AuthResult(
+                    false,
+                    message
+            );
+        }
     }
 }

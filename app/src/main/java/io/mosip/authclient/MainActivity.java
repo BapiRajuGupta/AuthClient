@@ -150,6 +150,8 @@ public class MainActivity extends AppCompatActivity {
     private String previousHash = "";
 
     private String combinedBiometrics;
+    private android.os.CountDownTimer resendOtpTimer;
+    private boolean resendOtpCountdownActive = false;
 
     // Discovery order
     private final String[] discoveryTypes = {
@@ -386,12 +388,24 @@ public class MainActivity extends AppCompatActivity {
                             isChecked
                     );
 
+                    // Biometric selection changed.
+                    // Previous capture is no longer valid.
+                    combinedBiometrics = null;
+                    capturedBiometrics.clear();
+                    previousHash = "";
+
                     updateAuthenticationButtons();
                 }
         );
 
         faceCheckBox.setOnCheckedChangeListener(
                 (buttonView, isChecked) -> {
+
+                    // Biometric selection changed.
+                    // Previous capture is no longer valid.
+                    combinedBiometrics = null;
+                    capturedBiometrics.clear();
+                    previousHash = "";
 
                     updateAuthenticationButtons();
                 }
@@ -404,6 +418,12 @@ public class MainActivity extends AppCompatActivity {
                             irisOptionsSection,
                             isChecked
                     );
+
+                    // Biometric selection changed.
+                    // Previous capture is no longer valid.
+                    combinedBiometrics = null;
+                    capturedBiometrics.clear();
+                    previousHash = "";
 
                     updateAuthenticationButtons();
                 }
@@ -474,6 +494,33 @@ public class MainActivity extends AppCompatActivity {
                     public void afterTextChanged(
                             Editable s
                     ) {
+                    }
+                }
+        );
+
+        individualIdEditText.addTextChangedListener(
+                new TextWatcher() {
+
+                    @Override
+                    public void beforeTextChanged(
+                            CharSequence s,
+                            int start,
+                            int count,
+                            int after) {
+                    }
+
+                    @Override
+                    public void onTextChanged(
+                            CharSequence s,
+                            int start,
+                            int before,
+                            int count) {
+
+                        updateAuthenticationButtons();
+                    }
+
+                    @Override
+                    public void afterTextChanged(Editable s) {
                     }
                 }
         );
@@ -758,45 +805,124 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateAuthenticationButtons() {
 
+        // ============================================================
+        // BIOMETRIC SELECTION
+        // ============================================================
+
+        boolean fingerSelected =
+                fingerCheckBox.isChecked();
+
+        boolean faceSelected =
+                faceCheckBox.isChecked();
+
+        boolean irisSelected =
+                irisCheckBox.isChecked();
+
         boolean biometricSelected =
-                fingerCheckBox.isChecked()
-                        || faceCheckBox.isChecked()
-                        || irisCheckBox.isChecked();
+                fingerSelected
+                        || faceSelected
+                        || irisSelected;
+
+
+        // ============================================================
+        // BIOMETRIC DEVICE READINESS
+        // ============================================================
+
+        boolean fingerReady =
+                fingerSelected
+                        && fingerSBI != null
+                        && fingerInfo != null;
+
+        boolean faceReady =
+                faceSelected
+                        && faceSBI != null
+                        && faceInfo != null;
+
+        boolean irisReady =
+                irisSelected
+                        && irisSBI != null
+                        && irisInfo != null;
+
+        boolean biometricReadyForCapture =
+                fingerReady
+                        || faceReady
+                        || irisReady;
+
+
+        // ============================================================
+        // CAPTURE BUTTON
+        // ============================================================
+
+        captureButton.setEnabled(
+                biometricSelected
+                        && biometricReadyForCapture
+        );
+
+
+        // ============================================================
+        // OTP
+        // ============================================================
 
         boolean otpSelected =
                 otpCheckBox.isChecked();
 
-        // --------------------------------------------------------
-        // Capture
-        // --------------------------------------------------------
+        boolean individualIdReady =
+                individualIdEditText != null
+                        && !individualIdEditText
+                        .getText()
+                        .toString()
+                        .trim()
+                        .isEmpty();
 
-        captureButton.setEnabled(
-                biometricSelected
+
+        // ============================================================
+        // REQUEST OTP BUTTON
+        // ============================================================
+
+        requestOtpButton.setEnabled(
+                otpSelected
+                        && individualIdReady
+                        && !resendOtpCountdownActive
         );
 
-        // --------------------------------------------------------
-        // Authenticate
-        // --------------------------------------------------------
 
-        boolean biometricReady =
+        // ============================================================
+        // BIOMETRIC AUTHENTICATION READY
+        // ============================================================
+
+        boolean biometricAuthenticationReady =
                 biometricSelected
                         && combinedBiometrics != null
                         && !combinedBiometrics
                         .trim()
                         .isEmpty();
 
-        boolean otpReady =
+
+        // ============================================================
+        // OTP AUTHENTICATION READY
+        // ============================================================
+
+        boolean otpAuthenticationReady =
                 otpSelected
                         && otpEditText != null
+                        && otpEditText.isEnabled()
                         && !otpEditText
                         .getText()
                         .toString()
                         .trim()
                         .isEmpty();
 
+
+        // ============================================================
+        // AUTHENTICATE BUTTON
+        // ============================================================
+
         authButton.setEnabled(
-                biometricReady
-                        || otpReady
+                individualIdReady
+                        && (
+                        biometricAuthenticationReady
+                                || otpAuthenticationReady
+                )
         );
     }
 
@@ -818,6 +944,24 @@ public class MainActivity extends AppCompatActivity {
         AppLogger.section(
                 "================================"
         );
+
+        // Clear previous SBI discovery information
+        // before performing a fresh discovery.
+        fingerSBI = null;
+        faceSBI = null;
+        irisSBI = null;
+
+        fingerInfo = null;
+        faceInfo = null;
+        irisInfo = null;
+
+        fingerCheckBox.setEnabled(false);
+        faceCheckBox.setEnabled(false);
+        irisCheckBox.setEnabled(false);
+
+        fingerCheckBox.setChecked(false);
+        faceCheckBox.setChecked(false);
+        irisCheckBox.setChecked(false);
 
         discoveryIndex = 0;
 
@@ -864,6 +1008,18 @@ public class MainActivity extends AppCompatActivity {
 
         sbiService.discover(
                 biometricType
+        );
+    }
+
+    private boolean isDeviceReady(DiscoverResponse sbi) {
+
+        if (sbi == null
+                || sbi.getDeviceStatus() == null) {
+            return false;
+        }
+
+        return "Ready".equalsIgnoreCase(
+                sbi.getDeviceStatus().trim()
         );
     }
 
@@ -920,9 +1076,12 @@ public class MainActivity extends AppCompatActivity {
         if (infoIndex == 0
                 && fingerSBI != null) {
 
-            getDeviceInfo(
-                    fingerSBI
-            );
+            if (isDeviceReady(fingerSBI)) {
+                getDeviceInfo(fingerSBI);
+            } else {
+                infoIndex++;
+                getNextDeviceInfo();
+            }
 
             return;
         }
@@ -931,9 +1090,12 @@ public class MainActivity extends AppCompatActivity {
         if (infoIndex == 1
                 && faceSBI != null) {
 
-            getDeviceInfo(
-                    faceSBI
-            );
+            if (isDeviceReady(faceSBI)) {
+                getDeviceInfo(faceSBI);
+            } else {
+                infoIndex++;
+                getNextDeviceInfo();
+            }
 
             return;
         }
@@ -942,9 +1104,12 @@ public class MainActivity extends AppCompatActivity {
         if (infoIndex == 2
                 && irisSBI != null) {
 
-            getDeviceInfo(
-                    irisSBI
-            );
+            if (isDeviceReady(irisSBI)) {
+                getDeviceInfo(irisSBI);
+            } else {
+                infoIndex++;
+                getNextDeviceInfo();
+            }
 
             return;
         }
@@ -1141,6 +1306,9 @@ public class MainActivity extends AppCompatActivity {
 
                 return;
             }
+
+            // Update button state immediately after biometric capture is completed.
+            updateAuthenticationButtons();
 
             AppLogger.success(
                     "All biometric captures processed successfully"
@@ -1383,6 +1551,22 @@ public class MainActivity extends AppCompatActivity {
         );
     }
 
+    private void clearCaptureState() {
+
+        captureIndex = 0;
+        captureModalities.clear();
+
+        capturedBiometrics.clear();
+        combinedBiometrics = null;
+        previousHash = "";
+
+        updateAuthenticationButtons();
+
+        AppLogger.info(
+                "Biometric capture state cleared"
+        );
+    }
+
 
     // ============================================================
     // ACTIVITY RESULT
@@ -1541,15 +1725,22 @@ public class MainActivity extends AppCompatActivity {
                 || data == null
                 || !data.hasExtra("response")) {
 
+            String modality =
+                    discoveryTypes[discoveryIndex];
+
             AppLogger.warning(
-                    "SBI discovery was cancelled or failed"
+                    modality + " SBI discovery was cancelled or failed"
             );
 
             Toast.makeText(
                     this,
-                    "Biometric device discovery was not completed.",
-                    Toast.LENGTH_LONG
+                    modality + " biometric device was not discovered.",
+                    Toast.LENGTH_SHORT
             ).show();
+
+            // Continue with the next biometric modality.
+            discoveryIndex++;
+            discoverNext();
 
             return;
         }
@@ -1562,15 +1753,22 @@ public class MainActivity extends AppCompatActivity {
         if (response == null
                 || response.length == 0) {
 
-            AppLogger.info(
-                    "SBI discovery returned an empty response"
+            String modality =
+                    discoveryTypes[discoveryIndex];
+
+            AppLogger.warning(
+                    modality + " SBI discovery returned an empty response"
             );
 
             Toast.makeText(
                     this,
-                    "No biometric device information was received.",
-                    Toast.LENGTH_LONG
+                    modality + " biometric device was not discovered.",
+                    Toast.LENGTH_SHORT
             ).show();
+
+            // Continue with the next biometric modality.
+            discoveryIndex++;
+            discoverNext();
 
             return;
         }
@@ -1598,6 +1796,12 @@ public class MainActivity extends AppCompatActivity {
 
                 irisSBI = sbi;
             }
+
+            // Update checkbox based on device status.
+            updateBiometricAvailability(
+                    modality,
+                    sbi
+            );
 
             AppLogger.success(
                     modality
@@ -1627,6 +1831,23 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private String getInfoModality() {
+
+        if (infoIndex == 0) {
+            return "Finger";
+        }
+
+        if (infoIndex == 1) {
+            return "Face";
+        }
+
+        if (infoIndex == 2) {
+            return "Iris";
+        }
+
+        return "Biometric";
+    }
+
     private void handleInfoResult(
             int resultCode,
             Intent data) {
@@ -1635,15 +1856,21 @@ public class MainActivity extends AppCompatActivity {
                 || data == null
                 || !data.hasExtra("response")) {
 
+            String modality = getInfoModality();
+
             AppLogger.warning(
-                    "SBI device information request was cancelled or failed"
+                    modality + " SBI device information request failed"
             );
 
             Toast.makeText(
                     this,
-                    "Unable to retrieve biometric device information.",
-                    Toast.LENGTH_LONG
+                    modality + " biometric device information unavailable.",
+                    Toast.LENGTH_SHORT
             ).show();
+
+            // Continue with the next available device.
+            infoIndex++;
+            getNextDeviceInfo();
 
             return;
         }
@@ -1656,15 +1883,20 @@ public class MainActivity extends AppCompatActivity {
         if (response == null
                 || response.length == 0) {
 
-            AppLogger.info(
-                    "SBI device information response is empty"
+            String modality = getInfoModality();
+
+            AppLogger.warning(
+                    modality + " SBI device information response is empty"
             );
 
             Toast.makeText(
                     this,
-                    "Biometric device information was not received.",
-                    Toast.LENGTH_LONG
+                    modality + " biometric device information unavailable.",
+                    Toast.LENGTH_SHORT
             ).show();
+
+            infoIndex++;
+            getNextDeviceInfo();
 
             return;
         }
@@ -1737,13 +1969,15 @@ public class MainActivity extends AppCompatActivity {
                 || data == null
                 || !data.hasExtra("response")) {
 
-            AppLogger.info(
+            AppLogger.warning(
                     "SBI capture failed or was cancelled"
             );
 
+            clearCaptureState();
+
             Toast.makeText(
                     this,
-                    "Biometric capture was not completed.",
+                    "Biometric capture was not completed. Please try again.",
                     Toast.LENGTH_LONG
             ).show();
 
@@ -1757,13 +1991,15 @@ public class MainActivity extends AppCompatActivity {
 
         if (uri == null) {
 
-            AppLogger.info(
+            AppLogger.warning(
                     "SBI capture response URI not found"
             );
 
+            clearCaptureState();
+
             Toast.makeText(
                     this,
-                    "Unable to receive biometric data.",
+                    "Unable to receive biometric data. Please try again.",
                     Toast.LENGTH_LONG
             ).show();
 
@@ -1811,6 +2047,8 @@ public class MainActivity extends AppCompatActivity {
                                 + " response contains no biometric data"
                 );
 
+                clearCaptureState();
+
                 Toast.makeText(
                         this,
                         "Biometric capture did not return valid data.",
@@ -1852,6 +2090,8 @@ public class MainActivity extends AppCompatActivity {
                                         + " capture failed: "
                                         + errorInfo
                         );
+
+                        clearCaptureState();
 
                         Toast.makeText(
                                 this,
@@ -1936,62 +2176,72 @@ public class MainActivity extends AppCompatActivity {
                 "================================"
         );
 
+        // --------------------------------------------------------
+        // Do NOT clear SBI discovery / device info
+        //
+        // These remain available after Reset.
+        //
+        // fingerSBI
+        // faceSBI
+        // irisSBI
+        // fingerInfo
+        // faceInfo
+        // irisInfo
+        // --------------------------------------------------------
 
-        // Clear SBI information
-        fingerSBI = null;
-        faceSBI = null;
-        irisSBI = null;
-
-
-        // Clear Info
-        fingerInfo = null;
-        faceInfo = null;
-        irisInfo = null;
-
-
-        // Clear indexes
-        discoveryIndex = 0;
-        infoIndex = 0;
+        // Clear capture indexes/state
         captureIndex = 0;
-
-        // Clear capture queue
         captureModalities.clear();
 
-
-        // Clear UI selections
+        // Clear authentication method selections
         fingerCheckBox.setChecked(false);
         faceCheckBox.setChecked(false);
         irisCheckBox.setChecked(false);
-
         otpCheckBox.setChecked(false);
 
+        setSectionEnabled(
+                otpSection,
+                false
+        );
+
+        // Clear OTP
         otpEditText.setText("");
         otpEditText.setEnabled(false);
+
+        // Clear temporary identity information
         individualIdEditText.setText("");
         individualIdTypeEditText.setText("UIN");
 
+        // Clear captured biometric data
         combinedBiometrics = null;
         capturedBiometrics.clear();
         previousHash = "";
 
+        // Reset authentication button states
         captureButton.setEnabled(false);
         authButton.setEnabled(false);
 
+        // Stop OTP resend countdown
+        if (resendOtpTimer != null) {
+            resendOtpTimer.cancel();
+            resendOtpTimer = null;
+        }
+
+        resendOtpCountdownActive = false;
+
+        // Reset OTP request button
+        requestOtpButton.setText("Request OTP");
+        requestOtpButton.setEnabled(false);
 
         AppLogger.info(
-                "All saved state cleared"
+                "Authentication state cleared. SBI discovery information retained."
         );
-
 
         Toast.makeText(
                 this,
-                "Resetting...",
+                "Authentication state reset",
                 Toast.LENGTH_SHORT
         ).show();
-
-
-        // Start again
-        startDiscoverySequence();
     }
 
     private void setupFingerCountSpinner() {
@@ -2061,6 +2311,34 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        String individualId =
+                individualIdEditText.getText()
+                        .toString()
+                        .trim();
+
+        String individualIdType =
+                individualIdTypeEditText.getText()
+                        .toString()
+                        .trim();
+
+        if (individualId.isEmpty()) {
+            Toast.makeText(
+                    this,
+                    "Please enter UIN.",
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+
+        if (individualIdType.isEmpty()) {
+            Toast.makeText(
+                    this,
+                    "Please enter UIN type.",
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+
         requestOtpButton.setEnabled(false);
 
         AppLogger.section(
@@ -2068,18 +2346,18 @@ public class MainActivity extends AppCompatActivity {
         );
 
         otpService.requestOtp(
-                individualIdEditText.getText().toString().trim(),
-                individualIdTypeEditText.getText().toString().trim(),
+                individualId,
+                individualIdType,
                 new OtpService.OtpCallback() {
 
                     @Override
                     public void onOtpRequested() {
 
-                        requestOtpButton.setEnabled(true);
-
                         otpEditText.setEnabled(true);
 
                         otpEditText.requestFocus();
+
+                        startResendOtpCountdown();
 
                         updateAuthenticationButtons();
 
@@ -2095,12 +2373,65 @@ public class MainActivity extends AppCompatActivity {
                             String message
                     ) {
 
-                        requestOtpButton.setEnabled(true);
-
                         otpEditText.setEnabled(false);
+
+                        updateAuthenticationButtons();
                     }
                 }
         );
+    }
+
+    private void startResendOtpCountdown() {
+
+        if (resendOtpTimer != null) {
+            resendOtpTimer.cancel();
+        }
+
+        resendOtpCountdownActive = true;
+
+        requestOtpButton.setEnabled(false);
+
+        resendOtpTimer = new android.os.CountDownTimer(
+                30000,
+                1000
+        ) {
+
+            @Override
+            public void onTick(long millisUntilFinished) {
+
+                long secondsRemaining =
+                        (millisUntilFinished + 999) / 1000;
+
+                requestOtpButton.setText(
+                        "Resend OTP (" + secondsRemaining + "s)"
+                );
+            }
+
+            @Override
+            public void onFinish() {
+
+                resendOtpCountdownActive = false;
+
+                requestOtpButton.setEnabled(
+                        otpCheckBox.isChecked()
+                                && !individualIdEditText
+                                .getText()
+                                .toString()
+                                .trim()
+                                .isEmpty()
+                );
+
+                requestOtpButton.setText(
+                        "Resend OTP"
+                );
+
+                resendOtpTimer = null;
+
+                updateAuthenticationButtons();
+            }
+        };
+
+        resendOtpTimer.start();
     }
 
     private void startAuthentication() {
@@ -2346,7 +2677,51 @@ public class MainActivity extends AppCompatActivity {
                 mosipAuthService.sendAuthRequest(
                         authRequestJson,
                         signature,
-                        authorizationToken
+                        authorizationToken,
+                        new MosipAuthService.AuthCallback() {
+
+                            @Override
+                            public void onAuthenticationSuccess(
+                                    String message
+                            ) {
+
+                                runOnUiThread(() ->
+                                        Toast.makeText(
+                                                MainActivity.this,
+                                                message,
+                                                Toast.LENGTH_LONG
+                                        ).show()
+                                );
+                            }
+
+                            @Override
+                            public void onAuthenticationFailed(
+                                    String message
+                            ) {
+
+                                runOnUiThread(() ->
+                                        Toast.makeText(
+                                                MainActivity.this,
+                                                message,
+                                                Toast.LENGTH_LONG
+                                        ).show()
+                                );
+                            }
+
+                            @Override
+                            public void onAuthenticationError(
+                                    String message
+                            ) {
+
+                                runOnUiThread(() ->
+                                        Toast.makeText(
+                                                MainActivity.this,
+                                                message,
+                                                Toast.LENGTH_LONG
+                                        ).show()
+                                );
+                            }
+                        }
                 );
 
             } catch (Exception e) {
@@ -2359,7 +2734,7 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() ->
                         Toast.makeText(
                                 MainActivity.this,
-                                "Authentication failed. Check logs.",
+                                "Authentication could not be completed. Please try again.",
                                 Toast.LENGTH_LONG
                         ).show()
                 );
@@ -2629,5 +3004,68 @@ public class MainActivity extends AppCompatActivity {
                 "Changes cancelled",
                 Toast.LENGTH_SHORT
         ).show();
+    }
+
+    private void updateBiometricAvailability(
+            String modality,
+            DiscoverResponse sbi) {
+
+        boolean ready = isDeviceReady(sbi);
+
+        if ("Finger".equals(modality)) {
+
+            fingerCheckBox.setEnabled(ready);
+
+            if (!ready) {
+                fingerCheckBox.setChecked(false);
+            }
+
+        } else if ("Face".equals(modality)) {
+
+            faceCheckBox.setEnabled(ready);
+
+            if (!ready) {
+                faceCheckBox.setChecked(false);
+            }
+
+        } else if ("Iris".equals(modality)) {
+
+            irisCheckBox.setEnabled(ready);
+
+            if (!ready) {
+                irisCheckBox.setChecked(false);
+            }
+        }
+
+        if (ready) {
+
+            AppLogger.success(
+                    modality + " biometric device is Ready"
+            );
+
+        } else {
+
+            String status =
+                    sbi != null && sbi.getDeviceStatus() != null
+                            ? sbi.getDeviceStatus()
+                            : "Unknown";
+
+            AppLogger.warning(
+                    modality
+                            + " biometric device is not Ready. Status: "
+                            + status
+            );
+
+            Toast.makeText(
+                    this,
+                    modality
+                            + " device is "
+                            + status
+                            + ". It cannot be used.",
+                    Toast.LENGTH_SHORT
+            ).show();
+        }
+
+        updateAuthenticationButtons();
     }
 }
